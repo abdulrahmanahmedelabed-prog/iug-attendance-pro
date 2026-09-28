@@ -184,6 +184,7 @@ class DeviceCommand(Base):
     id: Mapped[int] = mapped_column(primary_key=True)  # doubles as the C:<id>: in the protocol
     device_sn: Mapped[str] = mapped_column(String(50), index=True)
     content: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str | None] = mapped_column(String(40))  # fast de-duplication of queued commands
     title: Mapped[str] = mapped_column(String(120), default="")
     status: Mapped[str] = mapped_column(String(10), default="pending", index=True)  # pending/sent/done/failed
     attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -192,7 +193,8 @@ class DeviceCommand(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime)
     returned_at: Mapped[datetime | None] = mapped_column(DateTime)
-    __table_args__ = (Index("ix_cmd_dev_status", "device_sn", "status"),)
+    __table_args__ = (Index("ix_cmd_dev_status", "device_sn", "status"),
+                      Index("ix_cmd_dedupe", "device_sn", "content_hash"))
 
 
 PUNCH_STATES = {0: "check_in", 1: "check_out", 2: "break_out", 3: "break_in",

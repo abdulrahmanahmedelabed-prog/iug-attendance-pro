@@ -31,6 +31,12 @@ router = APIRouter(prefix="/iclock", tags=["adms"])
 TRAFFIC: deque = deque(maxlen=500)
 
 
+class NotRegistered(Exception):
+    """Unknown (auto-add off) or disabled terminal. The upload is refused with 403
+    so the terminal keeps the data and re-sends it once the device is approved,
+    instead of believing it was stored and deleting it from its queue."""
+
+
 def _text(body: str, status: int = 200) -> PlainTextResponse:
     return PlainTextResponse(body, status_code=status, media_type="text/plain")
 
@@ -68,10 +74,8 @@ def server_timezone(db, device: m.Device | None) -> int:
 def handle_handshake(sn: str, ip: str, params: dict) -> str:
     with session_scope() as db:
         dev = sync.get_or_register(db, sn, ip)
-        if dev is None:
-            return "UNKNOWN DEVICE"
-        if not dev.enabled:
-            return "DEVICE DISABLED"
+        if dev is None or not dev.enabled:
+            raise NotRegistered("UNKNOWN DEVICE" if dev is None else "DEVICE DISABLED")
         if params.get("pushver"):
             dev.push_ver = params["pushver"]
         dev.last_init = now()
@@ -90,7 +94,7 @@ def handle_upload(sn: str, ip: str, table: str, stamp: str | None, raw: bytes) -
     with session_scope() as db:
         dev = sync.get_or_register(db, sn, ip)
         if dev is None or not dev.enabled:
-            return "OK"  # accept & drop, otherwise the device retries forever
+            raise NotRegistered("UNKNOWN DEVICE" if dev is None else "DEVICE DISABLED")
         count = 0
         if table in ("ATTLOG", "ATTLOGS"):
             records = P.parse_attlog(P.decode_body(raw))
@@ -99,7 +103,9 @@ def handle_upload(sn: str, ip: str, table: str, stamp: str | None, raw: bytes) -
             if stamp:
                 dev.att_stamp = stamp
         elif table == "OPERLOG":
-            count = sync.apply_oper_items(db, dev, P.parse_operlog(P.decode_body(raw)))
+            items = P.parse_operlog(P.decode_body(raw))
+            sync.apply_oper_items(db, dev, items)
+            count = len(items)  # lines received (a skipped bad line must not make it re-send)
             if stamp:
                 dev.op_stamp = stamp
         elif table in _BIO_TABLES:
@@ -107,7 +113,8 @@ def handle_upload(sn: str, ip: str, table: str, stamp: str | None, raw: bytes) -
             for it in items:
                 if it.kind not in ("USER", "FP", "FACE", "BIODATA", "USERPIC", "BIOPHOTO"):
                     it.kind = _BIO_TABLES[table]
-            count = sync.apply_oper_items(db, dev, items)
+            sync.apply_oper_items(db, dev, items)
+            count = len(items)
         elif table == "ATTPHOTO":
             meta, data = P.parse_attphoto(raw)
             count = 1 if sync.save_attphoto(sn, meta, data) else 0
@@ -137,6 +144,8 @@ def handle_heartbeat(sn: str, ip: str, info: str | None) -> str:
             return "OK"
         if info:
             sync.apply_device_info(dev, P.parse_info_param(info))
+        else:
+            sync.refresh_info_if_due(db, dev)  # keep user/face/record counters current
         cmds = sync.next_commands(db, sn)
         return "".join(f"C:{c.id}:{c.content}\n" for c in cmds) if cmds else "OK"
 
@@ -160,6 +169,8 @@ def handle_cmd_result(sn: str, ip: str, raw: bytes) -> str:
 def handle_querydata(sn: str, ip: str, table: str, raw: bytes) -> str:
     with session_scope() as db:
         dev = sync.get_or_register(db, sn, ip) if sn else None
+        if dev is None or not dev.enabled:
+            raise NotRegistered("UNKNOWN DEVICE")
         rows = P.parse_querydata(P.decode_body(raw))
         items, punches = [], []
         for name, d in rows:
@@ -220,14 +231,21 @@ def handle_registry(sn: str, ip: str, raw: bytes) -> str:
 # Routes
 # --------------------------------------------------------------------------
 
+async def _call(fn, *args) -> tuple[str, int]:
+    try:
+        return await run_in_threadpool(fn, *args), 200
+    except NotRegistered as exc:
+        return str(exc), 403
+
+
 @router.get("/cdata")
 async def cdata_get(request: Request):
     sn = _sn(request)
     if not sn:
         return _text("ERROR: missing SN", 400)
-    reply = await run_in_threadpool(handle_handshake, sn, _ip(request), dict(request.query_params))
+    reply, status = await _call(handle_handshake, sn, _ip(request), dict(request.query_params))
     _trace(sn, request, 0, reply)
-    return _text(reply)
+    return _text(reply, status)
 
 
 @router.post("/cdata")
@@ -240,13 +258,13 @@ async def cdata_post(request: Request):
     table = (q.get("table") or "").upper()
     if table == "TABLEDATA":
         # Push 3.x firmware: users / templates / photos as "user uid=..\tpin=.." lines.
-        reply = await run_in_threadpool(handle_querydata, sn, _ip(request),
+        reply, status = await _call(handle_querydata, sn, _ip(request),
                                         (q.get("tablename") or "").lower(), raw)
     else:
-        reply = await run_in_threadpool(handle_upload, sn, _ip(request), table,
+        reply, status = await _call(handle_upload, sn, _ip(request), table,
                                         q.get("Stamp") or q.get("stamp"), raw)
     _trace(sn, request, len(raw), reply)
-    return _text(reply)
+    return _text(reply, status)
 
 
 @router.get("/getrequest")
@@ -273,9 +291,9 @@ async def querydata(request: Request):
     sn = _sn(request)
     raw = await request.body()
     table = (request.query_params.get("tablename") or "").lower()
-    reply = await run_in_threadpool(handle_querydata, sn, _ip(request), table, raw)
+    reply, status = await _call(handle_querydata, sn, _ip(request), table, raw)
     _trace(sn, request, len(raw), reply)
-    return _text(reply)
+    return _text(reply, status)
 
 
 @router.api_route("/ping", methods=["GET", "POST"])
@@ -322,3 +340,11 @@ async def fdata(request: Request):
         await run_in_threadpool(sync.save_attphoto, sn, meta, data)
     _trace(sn, request, len(raw), "OK")
     return _text("OK")
+
+
+# Older iClock firmware appends ".aspx" to every path (/iclock/cdata.aspx ...).
+for _route in list(router.routes):
+    if _route.path.startswith("/iclock/") and _route.path.count("/") == 2:
+        # add_api_route prepends the router prefix itself
+        router.add_api_route(_route.path[len(router.prefix):] + ".aspx", _route.endpoint,
+                             methods=list(_route.methods), include_in_schema=False)

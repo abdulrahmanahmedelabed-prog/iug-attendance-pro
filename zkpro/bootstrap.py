@@ -30,6 +30,8 @@ def _add_missing_columns() -> None:
                     ddl += " DEFAULT " + (str(int(default)) if isinstance(default, bool)
                                           else repr(default) if isinstance(default, str) else str(default))
                 conn.execute(text(ddl))
+            for index in table.indexes:  # indexes added by newer versions
+                index.create(conn, checkfirst=True)
 
 
 def init_db() -> None:

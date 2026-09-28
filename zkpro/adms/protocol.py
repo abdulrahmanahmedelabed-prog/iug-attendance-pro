@@ -257,6 +257,10 @@ def zk_decode_time(value: int) -> datetime:
     return datetime(value + 2000, month, day, hour, minute, second)
 
 
+def _stamp(value: str | None) -> str:
+    return "None" if value in (None, "", "0", "None") else str(value)
+
+
 def option_block(sn: str, *, att_stamp: str, op_stamp: str, photo_stamp: str, time_zone: int,
                  delay: int, trans_interval: int, trans_times: str, realtime: bool,
                  upload_photos: bool, server_ver: str) -> str:
@@ -266,9 +270,10 @@ def option_block(sn: str, *, att_stamp: str, op_stamp: str, photo_stamp: str, ti
         trans_flag.insert(2, "AttPhoto")
     lines = [
         f"GET OPTION FROM: {sn}",
-        f"ATTLOGStamp={att_stamp or 0}",
-        f"OPERLOGStamp={op_stamp or 0}",
-        f"ATTPHOTOStamp={photo_stamp or 0}",
+        # "None" = the server has nothing yet: the terminal uploads everything it holds.
+        f"ATTLOGStamp={_stamp(att_stamp)}",
+        f"OPERLOGStamp={_stamp(op_stamp)}",
+        f"ATTPHOTOStamp={_stamp(photo_stamp)}",
         "ErrorDelay=30",
         f"Delay={delay}",
         f"TransTimes={trans_times}",
@@ -280,6 +285,9 @@ def option_block(sn: str, *, att_stamp: str, op_stamp: str, photo_stamp: str, ti
         f"ServerVer={server_ver}",
         f"PushProtVer={server_ver}",
         "PushOptionsFlag=1",
+        "PushOptions=FingerFunOn,FaceFunOn,FPVersion,FaceVersion,MultiBioDataSupport,"
+        "MultiBioPhotoSupport,MultiBioVersion,UserCount,FPCount,FaceCount,PvCount,TransactionCount,"
+        "MaxUserCount,MaxAttLogCount,IPAddress,MAC,FirmVer,DeviceName",
         # Which BIODATA types the server stores: 1 fingerprint, 2 NIR face, 7 finger vein,
         # 8 palm, 9 visible-light face (SpeedFace).
         "MultiBioDataSupport=0:1:1:0:0:0:0:1:1:1",

@@ -8,11 +8,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -32,18 +33,20 @@ log = logging.getLogger("zkpro.adms")
 
 def queue(db: Session, sn: str, content: str, title: str = "") -> m.DeviceCommand | None:
     """Queue a command unless the very same one is already waiting for this device."""
+    digest = hashlib.sha1(content.encode("utf-8")).hexdigest()
     exists = db.scalar(select(m.DeviceCommand.id).where(
-        m.DeviceCommand.device_sn == sn, m.DeviceCommand.status == "pending",
-        m.DeviceCommand.content == content).limit(1))
+        m.DeviceCommand.device_sn == sn, m.DeviceCommand.content_hash == digest,
+        m.DeviceCommand.status == "pending").limit(1))
     if exists:
         return None
-    cmd = m.DeviceCommand(device_sn=sn, content=content, title=title or content.split(" PIN=")[0][:120])
+    cmd = m.DeviceCommand(device_sn=sn, content=content, content_hash=digest,
+                          title=title or content.split(" PIN=")[0][:120])
     db.add(cmd)
     db.flush()
     return cmd
 
 
-def next_commands(db: Session, sn: str, max_bytes: int = 64_000, max_count: int = 60) -> list[m.DeviceCommand]:
+def next_commands(db: Session, sn: str, max_bytes: int = 32_000, max_count: int = 50) -> list[m.DeviceCommand]:
     rows = db.scalars(select(m.DeviceCommand).where(
         m.DeviceCommand.device_sn == sn, m.DeviceCommand.status == "pending")
         .order_by(m.DeviceCommand.id).limit(max_count)).all()
@@ -57,6 +60,15 @@ def next_commands(db: Session, sn: str, max_bytes: int = 64_000, max_count: int 
     for c in picked:
         c.status, c.sent_at, c.attempts = "sent", ts, c.attempts + 1
     return picked
+
+
+def refresh_info_if_due(db: Session, device: m.Device, minutes: int = 30) -> None:
+    since = datetime.fromtimestamp(now().timestamp() - minutes * 60)
+    recent = db.scalar(select(m.DeviceCommand.id).where(
+        m.DeviceCommand.device_sn == device.sn, m.DeviceCommand.content == "INFO",
+        m.DeviceCommand.created_at >= since).limit(1))
+    if not recent:
+        queue(db, device.sn, "INFO", "Refresh device info")
 
 
 def requeue_stale(db: Session, older_than_minutes: int = 15, max_attempts: int = 3) -> int:
@@ -88,8 +100,8 @@ def device_employees(db: Session, device: m.Device) -> list[m.Employee]:
     if not device.area_id:
         return []
     return list(db.scalars(select(m.Employee).join(m.employee_area).where(
-        m.employee_area.c.area_id == device.area_id, m.Employee.status == "active",
-        m.Employee.enable_att.is_(True)).order_by(m.Employee.emp_code)).all())
+        m.employee_area.c.area_id == device.area_id, m.Employee.status == "active")
+        .order_by(m.Employee.emp_code)).all())
 
 
 def _device_opts(device: m.Device) -> dict:
@@ -207,7 +219,7 @@ def employee_changed(db: Session, emp: m.Employee, old_area_ids: set[int] | None
     new_ids = {a.id for a in emp.areas}
     old_ids = set(old_area_ids or set())
     n = 0
-    active = emp.status == "active" and emp.enable_att
+    active = emp.status == "active"
     for dev in area_devices(db, new_ids if active else set()):
         n += push_employee_to_device(db, dev, emp, with_bio=with_bio or dev.area_id not in old_ids)
     gone = (old_ids - new_ids) if active else (old_ids | new_ids)
@@ -263,7 +275,16 @@ def _employee_for_pin(db: Session, pin: str, device: m.Device | None, create: bo
         emp.areas = [device.area]
     db.add(emp)
     db.flush()
+    link_transactions(db, emp)
     return emp
+
+
+def link_transactions(db: Session, emp: m.Employee) -> int:
+    """Attach punches recorded before the employee existed (or after it was deleted and re-added)."""
+    res = db.execute(update(m.Transaction).where(m.Transaction.emp_code == emp.emp_code,
+                                                 m.Transaction.employee_id.is_(None))
+                     .values(employee_id=emp.id))
+    return res.rowcount or 0
 
 
 def save_punches(db: Session, device: m.Device | None, records: list[AttRecord],
@@ -315,45 +336,79 @@ def _upsert_template(db: Session, emp: m.Employee, *, bio_type: int, no: int, in
     return row, changed
 
 
+def _other_area_devices(db: Session, emp: m.Employee, source_sn: str) -> list[m.Device]:
+    if emp.status != "active":
+        return []
+    return [d for d in area_devices(db, {a.id for a in emp.areas}) if d.sn != source_sn]
+
+
 def _distribute_template(db: Session, emp: m.Employee, tpl: m.BioTemplate, source_sn: str) -> None:
-    if not store.get(db, "adms.sync_bio") or emp.status != "active":
+    if not store.get(db, "adms.sync_bio"):
         return
-    for dev in area_devices(db, {a.id for a in emp.areas}):
-        if dev.sn == source_sn:
-            continue
-        for content, title in template_commands(db, dev, emp, [tpl]):
+    for dev in _other_area_devices(db, emp, source_sn):
+        cmds = template_commands(db, dev, emp, [tpl])
+        if cmds:
+            # A terminal ignores templates of a PIN it does not know: the user goes first.
+            queue(db, dev.sn, C.user_update(emp), "User " + emp.emp_code)
+        for content, title in cmds:
             queue(db, dev.sn, content, title)
+
+
+def _distribute_user(db: Session, emp: m.Employee, source_sn: str) -> None:
+    """A user added/changed on one terminal is copied to the others of its areas."""
+    for dev in _other_area_devices(db, emp, source_sn):
+        queue(db, dev.sn, C.user_update(emp), "User " + emp.emp_code)
+
+
+def _distribute_userpic(db: Session, emp: m.Employee, source_sn: str) -> None:
+    for dev in _other_area_devices(db, emp, source_sn):
+        queue(db, dev.sn, C.userpic_update(emp.emp_code, emp.photo), "Photo " + emp.emp_code)
+
+
+def template_delete_command(device: m.Device, pin: str, bio_type: int, no: int = 0) -> str | None:
+    if _uses_biodata(device):
+        return C.biodata_delete(pin, bio_type)
+    if bio_type == 1:
+        return C.fingertmp_delete(pin, no)
+    if bio_type == 2:
+        return C.face_delete(pin)
+    return None
 
 
 def _distribute_photo(db: Session, emp: m.Employee, bio_type: int, content: str, source_sn: str) -> None:
     """Send an enrollment photo to devices that have no usable template of that type."""
-    if not store.get(db, "adms.sync_bio") or emp.status != "active" or bio_type != 9:
+    if not store.get(db, "adms.sync_bio") or bio_type != 9:
         return
     faces = list(db.scalars(select(m.BioTemplate).where(m.BioTemplate.employee_id == emp.id,
                                                         m.BioTemplate.bio_type == bio_type)).all())
-    for dev in area_devices(db, {a.id for a in emp.areas}):
-        if dev.sn == source_sn:
-            continue
+    for dev in _other_area_devices(db, emp, source_sn):
         support = device_bio_support(dev)
         if support and bio_type not in support:
             continue
         if not any(compatible(support, t) for t in faces):
+            queue(db, dev.sn, C.user_update(emp), "User " + emp.emp_code)
             queue(db, dev.sn, C.biophoto_update(emp.emp_code, bio_type, content), "Face photo " + emp.emp_code)
 
 
-def _apply_user(db: Session, device: m.Device | None, d: dict[str, str]) -> None:
+def _apply_user(db: Session, device: m.Device | None, d: dict[str, str]) -> tuple[m.Employee | None, bool]:
+    """Store a user record uploaded by a terminal. Returns (employee, changed).
+
+    The server stays the master for names; card, device password and device
+    privilege follow the terminal (that is where they are usually changed)."""
     pin = d.get("pin") or d.get("pin2") or ""
     if not pin:
-        return
+        return None, False
     name = d.get("name", "")
+    existed = db.scalar(select(m.Employee.id).where(m.Employee.emp_code == pin)) is not None
     emp = _employee_for_pin(db, pin, device, create=True, name=name)
+    before = (emp.full_name, emp.card_no, emp.dev_password, emp.dev_privilege)
     if name and not emp.full_name:
         first, _, last = name.partition(" ")
         emp.first_name, emp.last_name = first, last
-    if d.get("card") not in (None, "", "0", "[0000000000]"):
-        emp.card_no = d["card"].strip("[]")
-    if "cardno" in d and d["cardno"] not in ("", "0"):
-        emp.card_no = d["cardno"]
+    card = d.get("card", d.get("cardno"))
+    if card is not None:
+        card = card.strip().strip("[]")
+        emp.card_no = "" if card.strip("0") == "" else card
     pw = d.get("passwd", d.get("password"))
     if pw is not None:
         emp.dev_password = pw
@@ -363,6 +418,7 @@ def _apply_user(db: Session, device: m.Device | None, d: dict[str, str]) -> None
             emp.dev_privilege = int(pri)
         except ValueError:
             pass
+    return emp, (not existed) or before != (emp.full_name, emp.card_no, emp.dev_password, emp.dev_privilege)
 
 
 def apply_oper_items(db: Session, device: m.Device | None, items: list[OperItem]) -> int:
@@ -370,13 +426,21 @@ def apply_oper_items(db: Session, device: m.Device | None, items: list[OperItem]
     count = 0
     for it in items:
         d = it.data
+        savepoint = db.begin_nested()  # one bad line must not poison the whole upload
         try:
             if it.kind in ("USER", "USERINFO"):
-                _apply_user(db, device, d)
+                emp, changed = _apply_user(db, device, d)
+                if emp is None:
+                    savepoint.rollback()
+                    continue
+                db.flush()
+                if changed:
+                    _distribute_user(db, emp, sn)
             elif it.kind in ("FP", "FINGERTMP", "FACE", "BIODATA"):
                 pin = d.get("pin", "")
                 tmp = d.get("tmp", "")
                 if not pin or not tmp:
+                    savepoint.rollback()
                     continue
                 emp = _employee_for_pin(db, pin, device, create=True)
                 if it.kind in ("FP", "FINGERTMP"):
@@ -398,7 +462,10 @@ def apply_oper_items(db: Session, device: m.Device | None, items: list[OperItem]
                 pin, content = d.get("pin", ""), d.get("content", "")
                 if pin and content:
                     emp = _employee_for_pin(db, pin, device, create=True)
-                    emp.photo = content
+                    if emp.photo != content:
+                        emp.photo = content
+                        db.flush()
+                        _distribute_userpic(db, emp, sn)
             elif it.kind == "BIOPHOTO":
                 pin, content = d.get("pin", ""), d.get("content", "")
                 if pin and content:
@@ -420,9 +487,12 @@ def apply_oper_items(db: Session, device: m.Device | None, items: list[OperItem]
                                      admin=f[1], op_time=parse_time(f[2]),
                                      obj1=f[3], obj2=f[4], obj3=f[5], obj4=f[6]))
             else:
+                savepoint.rollback()
                 continue
+            savepoint.commit()
             count += 1
-        except (ValueError, IntegrityError) as exc:  # one bad line must not lose the batch
+        except (ValueError, IntegrityError) as exc:
+            savepoint.rollback()
             log.warning("skipping %s line from %s: %s", it.kind, sn, exc)
     return count
 
@@ -498,6 +568,6 @@ def photo_b64(data: bytes) -> str:
 def reset_stamps(device: m.Device, att: bool = True, op: bool = True) -> None:
     """Make the device upload everything again at its next handshake."""
     if att:
-        device.att_stamp = "0"
+        device.att_stamp = device.photo_stamp = "0"
     if op:
         device.op_stamp = "0"

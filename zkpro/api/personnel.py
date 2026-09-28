@@ -128,6 +128,7 @@ def create_employee(request: Request, data: dict = Body(...), db: Session = Depe
         e.areas = [first_area] if first_area else []
     db.add(e)
     db.flush()
+    sync.link_transactions(db, e)
     sync.employee_changed(db, e, set(), with_bio=True)
     audit(db, request, "create", "employee", code)
     db.commit()
@@ -245,9 +246,10 @@ def delete_template(emp_id: int, tpl_id: int, request: Request, db: Session = De
     e = db.get(m.Employee, emp_id)
     if not t or not e or t.employee_id != emp_id:
         raise HTTPException(404, "not found")
-    from ..adms import commands as C
     for dev in sync.area_devices(db, {a.id for a in e.areas}):
-        sync.queue(db, dev.sn, C.biodata_delete(e.emp_code, t.bio_type), f"Delete T{t.bio_type} {e.emp_code}")
+        cmd = sync.template_delete_command(dev, e.emp_code, t.bio_type, t.bio_no)
+        if cmd:
+            sync.queue(db, dev.sn, cmd, f"Delete T{t.bio_type} {e.emp_code}")
     db.delete(t)
     audit(db, request, "delete_template", "employee", e.emp_code)
     db.commit()
@@ -324,6 +326,8 @@ async def import_employees(request: Request, file: UploadFile = File(...), db: S
         for k, v in vals.items():
             setattr(e, k, v)
         db.flush()
+        if is_new:
+            sync.link_transactions(db, e)
         sync.employee_changed(db, e, set() if is_new else {a.id for a in e.areas}, with_bio=is_new)
         created += is_new
         updated += not is_new

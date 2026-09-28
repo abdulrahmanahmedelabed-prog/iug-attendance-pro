@@ -37,6 +37,14 @@ def face_update(pin: str, t) -> str:
                                      TMP=t.template)
 
 
+def fingertmp_delete(pin: str, fid: int | None = None) -> str:
+    return "DATA DELETE FINGERTMP " + (tsv(PIN=pin) if fid is None else tsv(PIN=pin, FID=fid))
+
+
+def face_delete(pin: str) -> str:
+    return "DATA DELETE FACE " + tsv(PIN=pin)
+
+
 def biodata_delete(pin: str, bio_type: int | None = None) -> str:
     if bio_type is None:
         return "DATA DELETE BIODATA " + tsv(Pin=pin)
@@ -49,7 +57,7 @@ def userpic_update(pin: str, b64: str) -> str:
 
 def biophoto_update(pin: str, bio_type: int, b64: str) -> str:
     return "DATA UPDATE BIOPHOTO " + tsv(PIN=pin, Type=bio_type, Size=len(b64), Content=b64,
-                                         Format=0, Url="", PostBackTmpFlag=0)
+                                         Format=0, Url="", PostBackTmpFlag=1)
 
 
 def query_attlog(start: datetime, end: datetime) -> str:
