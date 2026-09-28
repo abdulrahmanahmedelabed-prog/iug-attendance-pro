@@ -1,0 +1,14 @@
+; Copy to zkpro.ini and adjust. Environment variables ZK_<NAME> override these.
+[server]
+; address to listen on (0.0.0.0 = all network cards)
+host = 0.0.0.0
+; web interface
+web_port = 8090
+; ports the terminals push to (Menu > Comm. > Cloud Server Setting). Comma separated.
+; BioTime uses 8081; many installations use 80 or 90.
+adms_ports = 8081,90
+; database, photos and backups (relative to this folder)
+data_dir = data
+; a device is shown offline after this many seconds without contact
+offline_after = 120
+; database_url = sqlite:///C:/ZKPro/data/zkpro.db
