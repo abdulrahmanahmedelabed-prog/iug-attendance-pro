@@ -25,7 +25,7 @@ function modules() {
       { r: 'dashboard', label: T('لوحة التحكم', 'Dashboard'), icon: 'dashboard', page: pageDashboard },
       { r: 'monitor', label: T('المراقبة الحية', 'Real-time monitor'), icon: 'monitor', perm: 'attendance.view', page: pageMonitor },
     ] },
-    { key: 'personnel', label: T('الموظفون', 'Personnel'), icon: 'people', items: [
+    { key: 'personnel', label: T('الملف الشخصي', 'Personnel'), icon: 'people', items: [
       { r: 'personnel/employees', label: T('الموظفون', 'Employees'), icon: 'people', perm: 'personnel.view', page: pageEmployees },
       { r: 'personnel/departments', label: T('الأقسام', 'Departments'), icon: 'building', perm: 'personnel.view', page: pageDepartments },
       { r: 'personnel/positions', label: T('المسميات الوظيفية', 'Positions'), icon: 'badge', perm: 'personnel.view', page: pagePositions },
@@ -33,14 +33,14 @@ function modules() {
       { r: 'personnel/resigned', label: T('المستقيلون', 'Resigned'), icon: 'exit', perm: 'personnel.view', page: pageResigned },
     ] },
     { key: 'device', label: T('الأجهزة', 'Device'), icon: 'device', items: [
-      { r: 'device/terminals', label: T('أجهزة البصمة', 'Terminals'), icon: 'device', perm: 'device.view', page: pageDevices },
+      { r: 'device/terminals', label: T('الجهاز', 'Device'), icon: 'device', perm: 'device.view', page: pageDevices },
       { r: 'device/transactions', label: T('سجل الحركات', 'Transactions'), icon: 'list', perm: 'attendance.view', page: pageTransactions },
       { r: 'device/commands', label: T('أوامر الأجهزة', 'Device commands'), icon: 'terminal', perm: 'device.view', page: pageCommands },
       { r: 'device/traffic', label: T('مراقبة الاتصال', 'Communication'), icon: 'sync', perm: 'device.view', page: pageTraffic },
       { r: 'device/oplogs', label: T('سجل عمليات الجهاز', 'Operation log'), icon: 'list', perm: 'device.view', page: pageOplogs },
       { r: 'device/errors', label: T('سجل الأخطاء', 'Error log'), icon: 'list', perm: 'device.view', page: pageErrors },
     ] },
-    { key: 'attendance', label: T('الحضور', 'Attendance'), icon: 'clock', items: [
+    { key: 'attendance', label: T('الحضور والإنصراف', 'Attendance'), icon: 'clock', items: [
       { r: 'att/timetables', label: T('أوقات الدوام', 'Timetables'), icon: 'clock', perm: 'attendance.view', page: pageTimetables },
       { r: 'att/shifts', label: T('الورديات', 'Shifts'), icon: 'cal', perm: 'attendance.view', page: pageShifts },
       { r: 'att/schedules', label: T('جدولة الموظفين', 'Employee schedule'), icon: 'people', perm: 'attendance.view', page: pageSchedules },
@@ -210,7 +210,7 @@ async function pageDashboard(c) {
             <div class="panel-body"><svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bars}</svg></div></div>
           <div class="panel"><div class="panel-head"><h3>${esc(T('حالة الأجهزة', 'Device status'))}</h3><a href="#/device/terminals">${esc(T('الكل', 'All'))}</a></div>
             <div class="grid-wrap"><table class="grid"><thead><tr><th>${esc(T('الجهاز', 'Device'))}</th><th>${esc(T('الرقم التسلسلي', 'Serial'))}</th><th>IP</th><th>${esc(T('الحالة', 'State'))}</th><th>${esc(T('المستخدمون', 'Users'))}</th><th>${esc(T('آخر اتصال', 'Last activity'))}</th></tr></thead>
-            <tbody>${d.device_list.map(x => `<tr><td>${esc(x.alias)}</td><td class="ltr">${esc(x.sn)}</td><td class="ltr">${esc(x.ip)}</td><td><span class="dot ${x.state}"></span>${esc(stateLabel(x.state))}</td><td>${x.users}</td><td class="ltr">${esc(x.last_activity)}</td></tr>`).join('') || `<tr><td class="empty" colspan="6">${esc(T('لا توجد أجهزة بعد — وجّه جهاز البصمة إلى عنوان هذا الخادم (انظر الإعدادات)', 'No devices yet — point a terminal at this server (see Settings)'))}</td></tr>`}</tbody></table></div></div>
+            <tbody>${d.device_list.map(x => `<tr><td>${esc(x.alias)}</td><td class="ltr">${esc(x.sn)}</td><td class="ltr">${esc(x.ip)}</td><td>${stateIcon(x)} ${esc(stateLabel(x.state))}</td><td>${x.users}</td><td class="ltr">${esc(x.last_activity)}</td></tr>`).join('') || `<tr><td class="empty" colspan="6">${esc(T('لا توجد أجهزة بعد — وجّه جهاز البصمة إلى عنوان هذا الخادم (انظر الإعدادات)', 'No devices yet — point a terminal at this server (see Settings)'))}</td></tr>`}</tbody></table></div></div>
         </div>
         <div>
           <div class="panel"><div class="panel-head"><h3>${esc(T('آخر الحركات', 'Latest punches'))}</h3><a href="#/monitor">${esc(T('المراقبة الحية', 'Live monitor'))}</a></div><div class="feed" id="feed"></div></div>
@@ -439,60 +439,87 @@ function pageAreas(c) {
 }
 
 // ============================================================== devices
+function stateIcon(r) {
+  if (r.state === 'online' && r.transferring) return `<span class="st-icon transferring" title="${esc(T('جارٍ نقل البيانات', 'Transferring data'))}">⇈</span>`;
+  if (r.state === 'online') return `<span class="st-icon online" title="${esc(T('متصل', 'Online'))}">✓</span>`;
+  return `<span class="st-icon ${r.state}" title="${esc(stateLabel(r.state))}"></span>`;
+}
 async function pageDevices(c) {
-  title(c, T('أجهزة البصمة', 'Terminals'));
-  const s = await GET('/api/settings');
-  const ports = (s._server.adms_ports || []).join(' / ');
-  c.appendChild(h(`<div class="alert info">${esc(T('لربط جهاز (مثل SpeedFace-V5L): من قائمة الجهاز ← الاتصال ← إعدادات الخادم السحابي (Cloud Server / ADMS): فعّل ADMS، ضع عنوان IP لهذا الحاسوب، والمنفذ', 'To connect a terminal (e.g. SpeedFace-V5L): device menu → Comm. → Cloud Server Setting (ADMS): enable it, enter this PC\'s IP address and port'))} <b class="ltr">${esc(ports)}</b>${esc(T('، وألغِ تفعيل HTTPS والـ Proxy. سيظهر الجهاز هنا تلقائياً خلال ثوانٍ.', ', with HTTPS and proxy off. The device appears here automatically within seconds.'))}</div>`));
+  title(c, T('الجهاز', 'Device'));
+  const [s, first] = await Promise.all([GET('/api/settings'), GET('/api/devices')]);
+  if (!first.rows.length) {
+    const ports = (s._server.adms_ports || []).join(' / ');
+    c.appendChild(h(`<div class="alert info">${esc(T('لربط جهاز (مثل SpeedFace-V5L): من قائمة الجهاز ← الاتصال ← إعدادات الخادم السحابي (Cloud Server / ADMS): فعّل ADMS، ضع عنوان IP لهذا الحاسوب، والمنفذ', 'To connect a terminal (e.g. SpeedFace-V5L): device menu → Comm. → Cloud Server Setting (ADMS): enable it, enter this PC\'s IP address and port'))} <b class="ltr">${esc(ports)}</b>${esc(T('، وألغِ تفعيل HTTPS والـ Proxy. سيظهر الجهاز هنا تلقائياً خلال ثوانٍ.', ', with HTTPS and proxy off. The device appears here automatically within seconds.'))}</div>`));
+  }
   const lk = await lookups(true);
   const act = async (sel, action, confirmMsg, extra = {}) => {
     if (confirmMsg && !await confirmBox(confirmMsg)) return;
     let n = 0; for (const d of sel) n += (await guard(() => POST(`/api/devices/${d.id}/action`, { action, ...extra }))).queued;
     toast(T(`أُضيف ${n} أمر — يُنفذ عند اتصال الجهاز التالي`, `${n} command(s) queued — executed at the next heartbeat`), 'ok'); g.reload();
   };
+  const num = (k, label) => ({ key: k, label, cls: 'num' });
+  // Same columns and order as ZKBioTime 9 > Device > Device
   const g = grid(c, {
     columns: [
-      { key: 'alias', label: T('اسم الجهاز', 'Device name'), render: r => `<a href="#" data-act="detail">${esc(r.alias || r.sn)}</a>` },
+      { key: 'alias', label: T('إسم الجهاز', 'Device name'), render: r => `<a href="#" data-act="detail">${esc(r.alias || r.sn)}</a>` },
       { key: 'sn', label: T('الرقم التسلسلي', 'Serial number'), cls: 'ltr' },
-      { key: 'ip', label: 'IP', cls: 'ltr' },
       { key: 'area', label: T('المنطقة', 'Area') },
-      { key: 'state', label: T('الحالة', 'State'), render: r => `<span class="dot ${r.state}"></span>${esc(stateLabel(r.state))}` },
-      { key: 'last_activity', label: T('آخر اتصال', 'Last activity'), cls: 'ltr' },
+      { key: 'ip', label: T('IP عنوان الجهاز', 'Device IP'), cls: 'ltr' },
+      { key: 'state', label: T('الحالة', 'State'), cls: 'num', render: stateIcon },
+      { key: 'last_activity', label: T('النشاط الأخير', 'Last activity'), cls: 'ltr' },
+      num('user_count', T('المستخدم', 'User')),
+      num('fp_count', T('بصمة الإصبع', 'Fingerprint')),
+      num('face_count', T('الوجه', 'Face')),
+      num('palm_count', T('كف اليد', 'Palm')),
+      num('att_count', T('سجلات الحضور', 'Transactions')),
+      { key: 'last_sync', label: T('آخر مزامنة', 'Last sync'), cls: 'ltr' },
+      { key: 'pending', label: T('أوامر منتظرة', 'Pending cmds'), cls: 'num', render: r => r.pending ? `<span class="badge warn">${r.pending}</span>` : '0' },
       { key: 'model', label: T('الطراز', 'Model') },
-      { key: 'counts', label: T('المستخدمون/الوجوه/البصمات/الكف', 'Users/Faces/FP/Palm'), render: r => `${r.user_count} / ${r.face_count} / ${r.fp_count} / ${r.palm_count}` },
-      { key: 'att_count', label: T('الحركات', 'Records'), cls: 'num' },
-      { key: 'pending', label: T('أوامر معلقة', 'Pending cmds'), cls: 'num', render: r => r.pending ? `<span class="badge warn">${r.pending}</span>` : '0' },
-      { key: 'is_attendance', label: T('للحضور', 'T&A'), render: r => r.is_attendance ? '✓' : '—' },
+      { key: 'firmware', label: T('إصدار البرنامج', 'Firmware'), cls: 'ltr' },
     ],
     fetch: localFetch('/api/devices'),
     actions: { detail: (r) => deviceDetail(r, g) },
     onRow: (r) => deviceDetail(r, g),
     toolbar: [
-      { label: T('إضافة جهاز', 'Add device'), icon: 'add', cls: 'primary', perm: 'device.control', action: () => deviceForm(null, lk, g) },
+      { label: T('إضافة', 'Add'), icon: 'add', perm: 'device.control', action: () => deviceForm(null, lk, g) },
       { label: T('تعديل', 'Edit'), icon: 'edit', perm: 'device.control', needSel: true, action: (sel) => deviceForm(sel[0], lk, g) },
-      { label: T('حذف', 'Delete'), icon: 'del', cls: 'danger', perm: 'device.control', needSel: true, action: async (sel) => { if (await confirmBox(T('حذف الجهاز من البرنامج؟ (لا يُمسح شيء من الجهاز نفسه)', 'Remove the device from the server? (nothing is erased on the device)'))) { for (const d of sel) await DEL(`/api/devices/${d.id}`); g.reload(); } } },
-      { label: T('نقل البيانات', 'Data transfer'), icon: 'sync', perm: 'device.control', menu: [
-        { label: T('مزامنة كل البيانات إلى الجهاز', 'Synchronize all data to device'), icon: 'upload', needSel: true, action: (sel) => act(sel, 'sync_all') },
-        { label: T('سحب المستخدمين والقوالب من الجهاز', 'Upload users & templates from device'), icon: 'download', needSel: true, action: (sel) => act(sel, 'upload_users') },
-        { label: T('سحب الحركات من الجهاز (فترة)', 'Upload transactions (period)'), icon: 'download', needSel: true, action: (sel) => uploadAtt(sel, act) },
-        { label: T('إعادة رفع كل البيانات من الجهاز', 'Re-upload everything from device'), icon: 'refresh', needSel: true, action: (sel) => act(sel, 'reupload_all', T('سيعيد الجهاز إرسال كل السجلات (المكرر يُتجاهل تلقائياً). متابعة؟', 'The device will re-send all records (duplicates are ignored). Continue?')) },
+      { label: T('حذف', 'Delete'), icon: 'del', perm: 'device.control', needSel: true, action: async (sel) => { if (await confirmBox(T('حذف الجهاز من البرنامج؟ (لا يُمسح شيء من الجهاز نفسه)', 'Remove the device from the server? (nothing is erased on the device)'))) { for (const d of sel) await DEL(`/api/devices/${d.id}`); g.reload(); } } },
+      { label: T('منطقة جديدة', 'New area'), icon: 'map', perm: 'device.control', needSel: true, action: (sel) => setDeviceArea(sel, lk, g) },
+      { label: T('حذف الأوامر غير المنفذة', 'Clear pending commands'), icon: 'close', perm: 'device.control', needSel: true, action: async (sel) => {
+        if (!await confirmBox(T('حذف كل الأوامر التي لم ينفذها الجهاز بعد؟', 'Delete all commands the device has not executed yet?'))) return;
+        let n = 0; for (const d of sel) n += (await guard(() => POST('/api/device-commands/clear', { sn: d.sn, status: ['pending', 'sent'] }))).deleted;
+        toast(T(`حُذف ${n} أمر`, `${n} command(s) deleted`), 'ok'); g.reload();
+      } },
+      { label: T('حذف البيانات', 'Clear data'), icon: 'del', perm: 'device.control', menu: [
+        { label: T('حذف سجلات الحضور من الجهاز', 'Clear attendance records'), icon: 'del', needSel: true, action: (sel) => act(sel, 'clear_log', T('سيتم حذف سجلات الحضور من ذاكرة الجهاز (تبقى محفوظة في البرنامج). متابعة؟', 'Attendance records are erased from the device memory (they stay on the server). Continue?')) },
+        { label: T('حذف صور الحضور', 'Clear attendance photos'), icon: 'del', needSel: true, action: (sel) => act(sel, 'clear_photo', T('متابعة؟', 'Continue?')) },
+        { label: T('حذف كل بيانات الجهاز', 'Clear all device data'), icon: 'del', needSel: true, action: (sel) => act(sel, 'clear_data', T('سيُمسح كل المستخدمين والبصمات والسجلات من الجهاز! هل أنت متأكد؟', 'ALL users, templates and records will be erased from the device! Are you sure?')) },
+      ] },
+      { label: T('إرسال البيانات', 'Data transfer'), icon: 'sync', perm: 'device.control', menu: [
+        { label: T('مزامنة البيانات إلى الجهاز', 'Synchronize data to device'), icon: 'upload', needSel: true, action: (sel) => act(sel, 'sync_all') },
+        { label: T('رفع المستخدمين والقوالب من الجهاز', 'Upload user data from device'), icon: 'download', needSel: true, action: (sel) => act(sel, 'upload_users') },
+        { label: T('رفع سجلات الحضور (فترة)', 'Upload transactions (period)'), icon: 'download', needSel: true, action: (sel) => uploadAtt(sel, act) },
+        { label: T('إعادة تحميل البيانات', 'Reload data'), icon: 'refresh', needSel: true, action: (sel) => act(sel, 'reupload_all', T('سيعيد الجهاز إرسال كل السجلات (المكرر يُتجاهل تلقائياً). متابعة؟', 'The device will re-send all records (duplicates are ignored). Continue?')) },
         '-',
         { label: T('سحب الحركات عبر TCP 4370 (للأجهزة بدون ADMS)', 'Pull records over TCP 4370 (non-ADMS)'), icon: 'download', needSel: true, action: async (sel) => { for (const d of sel) { const r = await guard(() => POST(`/api/devices/${d.id}/pull`)); toast(`${d.alias}: ${r.read} / ${T('جديد', 'new')} ${r.new}`, 'ok'); } } },
       ] },
-      { label: T('التحكم', 'Control'), icon: 'system', perm: 'device.control', menu: [
+      { label: T('قائمة الجهاز', 'Device menu'), icon: 'system', perm: 'device.control', menu: [
+        { label: T('إعادة تشغيل', 'Reboot'), icon: 'sync', needSel: true, action: (sel) => act(sel, 'reboot', T('إعادة تشغيل الأجهزة المحددة؟', 'Reboot the selected devices?')) },
         { label: T('مزامنة الوقت', 'Synchronize time'), icon: 'clock', needSel: true, action: (sel) => act(sel, 'sync_time') },
         { label: T('قراءة معلومات الجهاز', 'Get device info'), icon: 'device', needSel: true, action: (sel) => act(sel, 'info') },
         { label: T('إعادة تحميل الإعدادات', 'Reload options'), icon: 'refresh', needSel: true, action: (sel) => act(sel, 'check') },
-        { label: T('إعادة تشغيل', 'Reboot'), icon: 'sync', needSel: true, action: (sel) => act(sel, 'reboot', T('إعادة تشغيل الأجهزة المحددة؟', 'Reboot the selected devices?')) },
         '-',
-        { label: T('حذف سجلات الحضور من الجهاز', 'Clear attendance records on device'), icon: 'del', needSel: true, action: (sel) => act(sel, 'clear_log', T('سيتم حذف سجلات الحضور من ذاكرة الجهاز (تبقى محفوظة في البرنامج). متابعة؟', 'Attendance records are erased from the device memory (they stay on the server). Continue?')) },
-        { label: T('حذف صور الحضور من الجهاز', 'Clear attendance photos'), icon: 'del', needSel: true, action: (sel) => act(sel, 'clear_photo', T('متابعة؟', 'Continue?')) },
-        { label: T('مسح كل بيانات الجهاز', 'Clear ALL device data'), icon: 'del', needSel: true, action: (sel) => act(sel, 'clear_data', T('سيُمسح كل المستخدمين والبصمات والسجلات من الجهاز! هل أنت متأكد؟', 'ALL users, templates and records will be erased from the device! Are you sure?')) },
         { label: T('إرسال أمر مخصص', 'Send custom command'), icon: 'terminal', needSel: true, action: (sel) => customCmd(sel, act) },
       ] },
     ],
   });
   App.timers.push(setInterval(() => document.visibilityState === 'visible' && g.reload(), 15000));
+}
+function setDeviceArea(sel, lk, g) {
+  const f = [{ key: 'area_id', label: T('المنطقة', 'Area'), type: 'select', options: opts(lk.areas), required: true }];
+  formDialog({ title: T('منطقة جديدة', 'New area'), size: 'narrow', cls: 'one', fields: f,
+    save: async (v) => { for (const d of sel) await PUT(`/api/devices/${d.id}`, { area_id: v.area_id }); } })
+    .then(() => { toast(T('ستُرسل بيانات موظفي المنطقة الجديدة إلى الأجهزة', 'Employees of the new area will be sent to the devices'), 'ok'); g.reload(); });
 }
 function uploadAtt(sel, act) {
   const f = [{ key: 'start', label: T('من', 'From'), type: 'date', default: addDays(today(), -30), required: true }, { key: 'end', label: T('إلى', 'To'), type: 'date', default: today(), required: true }];

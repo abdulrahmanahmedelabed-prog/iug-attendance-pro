@@ -173,6 +173,7 @@ class Device(Base):
     photo_stamp: Mapped[str] = mapped_column(String(30), default="0")
     last_activity: Mapped[datetime | None] = mapped_column(DateTime)
     last_init: Mapped[datetime | None] = mapped_column(DateTime)
+    last_sync: Mapped[datetime | None] = mapped_column(DateTime)  # last time the device uploaded data
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
     area: Mapped[Area | None] = relationship(lazy="joined")

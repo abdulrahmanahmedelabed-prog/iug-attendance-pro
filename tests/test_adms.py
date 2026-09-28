@@ -153,3 +153,27 @@ def test_push3_tabledata_upload(client):
     assert r.text == "user=2"
     emp = client.get("/api/employees", params={"q": "808"}).json()["rows"][0]
     assert emp["name"] == "Khaled" and emp["card_no"] == "4455" and emp["face_count"] == 1
+
+
+def test_last_sync_and_transferring_state(client, device_factory):
+    dev = device_factory("SYNC1")
+    dev.handshake()
+    d = _dev(client, "SYNC1")
+    assert d["last_sync"] is None  # the options upload alone is not a data sync
+    client.post("/api/employees", json={"emp_code": "61", "first_name": "Queued"})
+    assert _dev(client, "SYNC1")["transferring"] is True
+    dev.drain()
+    dev.punch("61")
+    d = _dev(client, "SYNC1")
+    assert d["transferring"] is False and d["last_sync"]
+
+
+def test_old_database_gets_new_columns(client):
+    from sqlalchemy import inspect, text
+    from zkpro.bootstrap import init_db
+    from zkpro.db import engine
+    with engine.begin() as conn:
+        conn.execute(text('ALTER TABLE device DROP COLUMN last_sync'))
+    assert "last_sync" not in {c["name"] for c in inspect(engine).get_columns("device")}
+    init_db()
+    assert "last_sync" in {c["name"] for c in inspect(engine).get_columns("device")}

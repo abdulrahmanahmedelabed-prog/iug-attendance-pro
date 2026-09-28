@@ -125,6 +125,8 @@ def handle_upload(sn: str, ip: str, table: str, stamp: str | None, raw: bytes) -
                     count += 1
         else:
             log.info("%s uploaded unhandled table %r (%d bytes)", sn, table, len(raw))
+        if count and table != "OPTIONS":
+            dev.last_sync = now()
     return f"OK: {count}" if table in ("ATTLOG", "ATTLOGS", "OPERLOG", "BIODATA") else "OK"
 
 
@@ -182,6 +184,8 @@ def handle_querydata(sn: str, ip: str, table: str, raw: bytes) -> str:
                                                work_code=d.get("workcode", "")))
         sync.apply_oper_items(db, dev, items)
         sync.save_punches(db, dev, punches)
+        if dev is not None and rows:
+            dev.last_sync = now()
     return f"{table}={len(rows)}" if table else "OK"
 
 

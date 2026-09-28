@@ -106,6 +106,8 @@ def dashboard(db: Session = Depends(get_db), _=Depends(current_user)):
     today = now().date()
     devices = db.scalars(select(m.Device)).all()
     online = sum(1 for d in devices if d.enabled and is_online(d))
+    busy = set(db.scalars(select(m.DeviceCommand.device_sn).where(
+        m.DeviceCommand.status.in_(("pending", "sent"))).distinct()).all())
     employees = db.scalar(select(func.count()).select_from(m.Employee).where(m.Employee.status == "active")) or 0
     lo = datetime.combine(today, time.min)
     punches_today = db.scalar(select(func.count()).select_from(m.Transaction).where(
@@ -149,7 +151,8 @@ def dashboard(db: Session = Depends(get_db), _=Depends(current_user)):
         "device_list": [{"id": d.id, "sn": d.sn, "alias": d.alias, "ip": d.ip, "area": d.area.name if d.area else "",
                          "state": "disabled" if not d.enabled else ("online" if is_online(d) else "offline"),
                          "last_activity": d.last_activity.strftime("%Y-%m-%d %H:%M:%S") if d.last_activity else "",
-                         "users": d.user_count, "faces": d.face_count, "fps": d.fp_count, "palms": d.palm_count}
+                         "users": d.user_count, "faces": d.face_count, "fps": d.fp_count, "palms": d.palm_count,
+                         "transferring": d.enabled and is_online(d) and d.sn in busy}
                         for d in devices],
         "pending": pending,
     }

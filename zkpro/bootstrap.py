@@ -4,15 +4,37 @@ from __future__ import annotations
 import json
 from datetime import time
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 
 from .db import Base, engine, session_scope
 from . import models as m
 from .security import PERMISSIONS, hash_password
 
 
+def _add_missing_columns() -> None:
+    """Minimal forward migration: add columns introduced by newer versions to
+    existing tables (SQLite's create_all never alters a table)."""
+    insp = inspect(engine)
+    existing_tables = set(insp.get_table_names())
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in have:
+                    continue
+                ddl = f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col.type.compile(dialect=engine.dialect)}'
+                default = col.default.arg if col.default is not None and col.default.is_scalar else None
+                if default is not None:
+                    ddl += " DEFAULT " + (str(int(default)) if isinstance(default, bool)
+                                          else repr(default) if isinstance(default, str) else str(default))
+                conn.execute(text(ddl))
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    _add_missing_columns()
     with session_scope() as db:
         if not db.scalar(select(m.User).limit(1)):
             db.add(m.User(username="admin", full_name="Administrator", is_superuser=True,

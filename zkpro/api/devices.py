@@ -33,6 +33,8 @@ def dev_dict(db: Session, d: m.Device) -> dict:
     out["state"] = "disabled" if not d.enabled else ("online" if is_online(d) else "offline")
     out["pending"] = db.scalar(select(func.count()).select_from(m.DeviceCommand).where(
         m.DeviceCommand.device_sn == d.sn, m.DeviceCommand.status.in_(("pending", "sent")))) or 0
+    # BioTime's green "transferring" arrows: online with commands still to deliver
+    out["transferring"] = out["state"] == "online" and out["pending"] > 0
     try:
         out["options"] = json.loads(d.options or "{}")
     except json.JSONDecodeError:
