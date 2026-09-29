@@ -210,6 +210,8 @@ def put_settings(request: Request, data: dict = Body(...), db: Session = Depends
     for k, v in data.items():
         if k in store.DEFAULTS:
             store.set_(db, k, v)
+    from ..adms import relay
+    relay.invalidate()
     audit(db, request, "update", "settings", ", ".join(data)[:500])
     db.commit()
     return store.all_(db)
@@ -336,6 +338,33 @@ def restore_backup(name: str, request: Request, _=Depends(require("system.admin"
     finally:
         src.close()
     return {"ok": True}
+
+
+@router.get("/relay")
+def relay_status(_=Depends(require("device.view"))):
+    from ..adms import relay
+    cfg = relay.config(ttl=0)
+    st = relay.STATUS
+    return {"enabled": bool(cfg), "url": cfg.url if cfg else "", "primary": cfg.primary if cfg else "",
+            "ok": st.ok, "failed": st.failed, "last_ok": st.last_ok, "last_error": st.last_error,
+            "last_error_at": st.last_error_at}
+
+
+@router.post("/relay/test")
+def relay_test(data: dict = Body(...), _=Depends(require("system.admin"))):
+    """Check that the BioTime address answers (before turning the relay on)."""
+    import urllib.error
+    import urllib.request
+    url = str(data.get("url", "")).strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(422, "address must start with http://")
+    try:
+        with urllib.request.urlopen(url + "/iclock/ping?SN=ZKPRO-TEST", timeout=8) as r:
+            return {"ok": True, "status": r.status, "reply": r.read(200).decode("utf-8", "replace")}
+    except urllib.error.HTTPError as exc:
+        return {"ok": True, "status": exc.code, "reply": exc.read(200).decode("utf-8", "replace")}
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 @router.get("/about")

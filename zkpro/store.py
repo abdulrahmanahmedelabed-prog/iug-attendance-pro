@@ -31,6 +31,9 @@ DEFAULTS: dict[str, Any] = {
     "adms.timezone": None,            # hours; None = server local offset
     "adms.sync_bio": True,            # distribute templates enrolled on one device to the area
     "adms.upload_photos": True,       # ask devices to upload attendance photos
+    # Side-by-side with ZKBioTime: forward every terminal request to it (e.g. http://127.0.0.1:90)
+    "adms.relay_url": "",
+    "adms.relay_primary": "biotime",  # biotime | zkpro — whose replies the terminal follows
     # --- Maintenance ---
     "backup.keep": 14,
     "backup.hour": 2,

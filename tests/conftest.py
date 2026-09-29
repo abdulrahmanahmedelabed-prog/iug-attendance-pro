@@ -23,6 +23,8 @@ from zkpro.adms.server import TRAFFIC  # noqa: E402
 def client():
     Base.metadata.drop_all(engine)
     TRAFFIC.clear()
+    from zkpro.adms import relay
+    relay.invalidate()
     init_db()
     with TestClient(app) as c:
         r = c.post("/api/auth/login", json={"username": "admin", "password": "admin"})

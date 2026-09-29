@@ -590,8 +590,13 @@ function trafficTable(rows) {
 async function pageTraffic(c) {
   title(c, T('مراقبة اتصال الأجهزة (ADMS)', 'Device communication (ADMS)'));
   c.appendChild(h(`<div class="alert info">${esc(T('آخر 500 طلب من الأجهزة إلى الخادم. مفيد لتشخيص مشاكل الربط: إن لم يظهر الجهاز هنا فالمشكلة في الشبكة أو الجدار الناري أو إعداد الخادم على الجهاز.', 'The last 500 device requests. Useful for troubleshooting: if a device never shows up here, check the network, firewall or the server setting on the device.'))}</div>`));
+  const rs = h('<div></div>'); c.appendChild(rs);
   const p = h('<div class="panel"></div>'); c.appendChild(p);
-  const draw = async () => { p.innerHTML = trafficTable((await GET('/api/device-traffic')).rows); };
+  const draw = async () => {
+    const [t, r] = await Promise.all([GET('/api/device-traffic'), GET('/api/relay')]);
+    rs.innerHTML = r.enabled ? `<div class="alert ${r.last_error && r.last_error_at > r.last_ok ? '' : 'info'}">${esc(T('التمرير إلى BioTime مفعّل', 'Relaying to BioTime'))}: <b class="ltr">${esc(r.url)}</b> · ${esc(T('ناجح', 'ok'))} ${r.ok} · ${esc(T('فاشل', 'failed'))} ${r.failed}${r.last_error ? ` · ${esc(T('آخر خطأ', 'last error'))}: <span class="ltr">${esc(r.last_error_at)} ${esc(r.last_error)}</span>` : ''}</div>` : '';
+    p.innerHTML = trafficTable(t.rows);
+  };
   await draw(); App.timers.push(setInterval(() => document.visibilityState === 'visible' && draw(), 5000));
 }
 async function pageTransactions(c) {
@@ -946,6 +951,12 @@ async function pageSettings(c) {
     { key: 'adms.timezone', label: T('المنطقة الزمنية للأجهزة (ساعات، فارغ = توقيت هذا الحاسوب)', 'Device time zone (hours, empty = this PC)'), type: 'number', min: -12, max: 14 },
     { key: 'adms.sync_bio', label: T('توزيع القوالب', 'Template distribution'), type: 'checkbox', text: T('إرسال الوجه/البصمة المسجلة على جهاز إلى باقي أجهزة المنطقة', 'Send faces/fingerprints enrolled on one device to the other devices of the area') },
     { key: 'adms.upload_photos', label: T('صور الحضور', 'Attendance photos'), type: 'checkbox', text: T('طلب صور البصمة من الأجهزة', 'Ask devices to upload punch photos') },
+    { section: T('العمل جنباً إلى جنب مع ZKBioTime', 'Side by side with ZKBioTime') },
+    { key: 'adms.relay_url', label: T('عنوان BioTime (فارغ = إيقاف)', 'BioTime address (empty = off)'), placeholder: 'http://127.0.0.1:90',
+      hint: T('وجّه الأجهزة إلى منفذ هذا البرنامج، وسيحفظ كل شيء ويمرّر كل طلب إلى BioTime كما هو فيبقى BioTime يعمل.', 'Point terminals at this program; it stores everything and passes every request on to BioTime unchanged.') },
+    { key: 'adms.relay_primary', label: T('الجهاز يتبع ردود', 'Terminal follows'), type: 'select', blank: false, options: [
+      { value: 'biotime', label: T('BioTime (فترة التجربة — لا يفقد BioTime أي سجل)', 'BioTime (trial period — BioTime never misses a record)') },
+      { value: 'zkpro', label: T('هذا البرنامج (قبل إيقاف BioTime نهائياً)', 'This program (before retiring BioTime)') }] },
     { section: T('النسخ الاحتياطي التلقائي', 'Automatic backup') },
     { key: 'backup.hour', label: T('ساعة النسخ اليومي (0-23)', 'Daily backup hour (0-23)'), type: 'number', min: 0, max: 23 },
     { key: 'backup.keep', label: T('عدد النسخ المحفوظة', 'Backups to keep'), type: 'number', min: 1 },
@@ -957,8 +968,14 @@ async function pageSettings(c) {
       <div>${esc(T('منفذ الأجهزة ADMS', 'ADMS port(s)'))}</div><div><bdi>${esc(srv.adms_ports.join(', '))}</bdi> ${esc(T('(الواجهة تقبل اتصال الأجهزة أيضاً على منفذها)', '(the web port accepts devices too)'))}</div>
       <div>${esc(T('مجلد البيانات', 'Data folder'))}</div><div><bdi>${esc(srv.data_dir)}</bdi></div></div>
       <p class="muted">${esc(T('لتغيير المنافذ: عدّل ملف zkpro.ini أو شغّل البرنامج بـ run.py --web 8090 --adms 90', 'To change ports edit zkpro.ini or start with run.py --web 8090 --adms 90'))}</p></div></div>
-    <div class="panel"><div class="panel-body">${formHtml(f, s)}</div><div class="toolbar" style="border-top:1px solid var(--line);border-bottom:0"><button class="btn primary">${icon('check')}${esc(T('حفظ', 'Save'))}</button></div></div></div>`);
+    <div class="panel"><div class="panel-body">${formHtml(f, s)}</div><div class="toolbar" style="border-top:1px solid var(--line);border-bottom:0"><button class="btn primary">${icon('check')}${esc(T('حفظ', 'Save'))}</button><button class="btn relay-test">${icon('sync')}${esc(T('اختبار الاتصال بـ BioTime', 'Test BioTime connection'))}</button><span class="relay-res muted"></span></div></div></div>`);
   c.appendChild(p);
+  $('.relay-test', p).onclick = async () => {
+    const url = $('[name="adms.relay_url"]', p).value.trim();
+    if (!url) return toast(T('اكتب عنوان BioTime أولاً', 'Enter the BioTime address first'), 'bad');
+    const r = await guard(() => POST('/api/relay/test', { url }));
+    $('.relay-res', p).textContent = r.ok ? `✓ ${T('BioTime يرد', 'BioTime answers')} (HTTP ${r.status}: ${r.reply})` : `✗ ${r.error}`;
+  };
   $('.btn.primary', p).onclick = () => guard(() => { const v = readForm(p, f); if (v['adms.timezone'] === '') v['adms.timezone'] = null; if (v['adms.default_area'] !== '') v['adms.default_area'] = +v['adms.default_area']; return PUT('/api/settings', v); }, T('تم الحفظ', 'Saved'));
 }
 async function pageUsers(c) {

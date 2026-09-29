@@ -13,7 +13,7 @@ from collections import deque
 from datetime import datetime
 
 from fastapi import APIRouter, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
@@ -22,7 +22,7 @@ from ..db import now, session_scope
 from .. import models as m
 from ..version import PUSH_PROTOCOL_VERSION
 from . import protocol as P
-from . import sync
+from . import relay, sync
 
 log = logging.getLogger("zkpro.adms")
 router = APIRouter(prefix="/iclock", tags=["adms"])
@@ -137,7 +137,7 @@ def handle_upload(sn: str, ip: str, table: str, stamp: str | None, raw: bytes) -
     return f"OK: {count}" if table in ("ATTLOG", "ATTLOGS", "OPERLOG", "BIODATA") else "OK"
 
 
-def handle_heartbeat(sn: str, ip: str, info: str | None) -> str:
+def handle_heartbeat(sn: str, ip: str, info: str | None, id_offset: int = 0) -> str:
     with session_scope() as db:
         dev = sync.get_or_register(db, sn, ip)
         if dev is None or not dev.enabled:
@@ -147,13 +147,17 @@ def handle_heartbeat(sn: str, ip: str, info: str | None) -> str:
         else:
             sync.refresh_info_if_due(db, dev)  # keep user/face/record counters current
         cmds = sync.next_commands(db, sn)
-        return "".join(f"C:{c.id}:{c.content}\n" for c in cmds) if cmds else "OK"
+        return "".join(f"C:{c.id + id_offset}:{c.content}\n" for c in cmds) if cmds else "OK"
 
 
-def handle_cmd_result(sn: str, ip: str, raw: bytes) -> str:
+def handle_cmd_result(sn: str, ip: str, raw: bytes, relay_on: bool = False) -> str:
     with session_scope() as db:
         dev = sync.get_or_register(db, sn, ip) if sn else None
         for r in P.parse_devicecmd(P.decode_body(raw)):
+            if r.id >= relay.OFFSET:
+                r.id -= relay.OFFSET
+            elif relay_on:
+                continue  # BioTime's command (forwarded separately)
             cmd = db.get(m.DeviceCommand, r.id)
             if cmd is None or (sn and cmd.device_sn != sn):
                 continue
@@ -238,14 +242,54 @@ async def _call(fn, *args) -> tuple[str, int]:
         return str(exc), 403
 
 
+async def _local(fn, *args, relayed: bool) -> tuple[str, int]:
+    """Run our handler. When relaying, a problem on our side must never keep the
+    terminal from reaching BioTime, so errors are logged instead of raised."""
+    if not relayed:
+        return await _call(fn, *args)
+    try:
+        return await _call(fn, *args)
+    except Exception:  # noqa: BLE001
+        log.exception("local handling failed while relaying")
+        return "ERROR", 500
+
+
+async def _relay(cfg, request: Request, body: bytes = b"") -> tuple[int, bytes] | None:
+    return await run_in_threadpool(relay.forward, cfg, request.method, request.url.path,
+                                   request.url.query, body, _ip(request))
+
+
+def _raw(body: bytes, status: int = 200) -> Response:
+    return Response(content=body, status_code=status, media_type="text/plain")
+
+
+_UNAVAILABLE = b"BioTime server unavailable, retry later"
+
+
+async def _relayed_reply(cfg, request: Request, body: bytes, local: tuple[str, int], sn: str) -> Response:
+    """Forward a request and answer the terminal like the primary server would."""
+    remote = await _relay(cfg, request, body)
+    if cfg.biotime_primary:
+        if remote is None:
+            _trace(sn, request, len(body), "[relay] BioTime unreachable -> 503")
+            return _raw(_UNAVAILABLE, 503)
+        _trace(sn, request, len(body), "[relay] " + remote[1].decode("utf-8", "replace"))
+        return _raw(remote[1], remote[0])
+    _trace(sn, request, len(body), local[0])
+    return _text(local[0], local[1])
+
+
 @router.get("/cdata")
 async def cdata_get(request: Request):
     sn = _sn(request)
     if not sn:
         return _text("ERROR: missing SN", 400)
-    reply, status = await _call(handle_handshake, sn, _ip(request), dict(request.query_params))
-    _trace(sn, request, 0, reply)
-    return _text(reply, status)
+    cfg = await run_in_threadpool(relay.config)
+    local = await _local(handle_handshake, sn, _ip(request), dict(request.query_params), relayed=bool(cfg))
+    if cfg:
+        return await _relayed_reply(cfg, request, b"", local, sn)
+    _trace(sn, request, 0, local[0])
+    return _text(*local)
 
 
 @router.post("/cdata")
@@ -256,15 +300,18 @@ async def cdata_post(request: Request):
         return _text("ERROR: missing SN", 400)
     q = request.query_params
     table = (q.get("table") or "").upper()
+    cfg = await run_in_threadpool(relay.config)
     if table == "TABLEDATA":
         # Push 3.x firmware: users / templates / photos as "user uid=..\tpin=.." lines.
-        reply, status = await _call(handle_querydata, sn, _ip(request),
-                                        (q.get("tablename") or "").lower(), raw)
+        local = await _local(handle_querydata, sn, _ip(request), (q.get("tablename") or "").lower(), raw,
+                             relayed=bool(cfg))
     else:
-        reply, status = await _call(handle_upload, sn, _ip(request), table,
-                                        q.get("Stamp") or q.get("stamp"), raw)
-    _trace(sn, request, len(raw), reply)
-    return _text(reply, status)
+        local = await _local(handle_upload, sn, _ip(request), table, q.get("Stamp") or q.get("stamp"), raw,
+                             relayed=bool(cfg))
+    if cfg:
+        return await _relayed_reply(cfg, request, raw, local, sn)
+    _trace(sn, request, len(raw), local[0])
+    return _text(*local)
 
 
 @router.get("/getrequest")
@@ -272,18 +319,46 @@ async def getrequest(request: Request):
     sn = _sn(request)
     if not sn:
         return _text("ERROR: missing SN", 400)
-    reply = await run_in_threadpool(handle_heartbeat, sn, _ip(request), request.query_params.get("INFO"))
-    _trace(sn, request, 0, reply)
-    return _text(reply)
+    cfg = await run_in_threadpool(relay.config)
+    info = request.query_params.get("INFO")
+    if not cfg:
+        reply = await run_in_threadpool(handle_heartbeat, sn, _ip(request), info)
+        _trace(sn, request, 0, reply)
+        return _text(reply)
+    # Merge BioTime's queued commands with ours (ours carry id + OFFSET).
+    remote = await _relay(cfg, request)
+    try:
+        ours = await run_in_threadpool(handle_heartbeat, sn, _ip(request), info, relay.OFFSET)
+    except Exception:  # noqa: BLE001
+        log.exception("heartbeat handling failed while relaying")
+        ours = "OK"
+    lines = relay.command_lines(remote[1]) if remote else []
+    lines += relay.command_lines(ours.encode("utf-8"))
+    body = b"\n".join(lines) + b"\n" if lines else b"OK"
+    _trace(sn, request, 0, "[relay] " + body.decode("utf-8", "replace"))
+    return _raw(body)
 
 
 @router.post("/devicecmd")
 async def devicecmd(request: Request):
     sn = _sn(request)
     raw = await request.body()
-    reply = await run_in_threadpool(handle_cmd_result, sn, _ip(request), raw)
-    _trace(sn, request, len(raw), reply)
-    return _text(reply)
+    cfg = await run_in_threadpool(relay.config)
+    if not cfg:
+        reply = await run_in_threadpool(handle_cmd_result, sn, _ip(request), raw)
+        _trace(sn, request, len(raw), reply)
+        return _text(reply)
+    ours, theirs = relay.split_results(raw)
+    if ours:
+        await _local(handle_cmd_result, sn, _ip(request), ours, True, relayed=True)
+    if theirs:
+        remote = await run_in_threadpool(relay.forward, cfg, "POST", request.url.path, request.url.query,
+                                         theirs + b"\n", _ip(request))
+        if remote is None and cfg.biotime_primary:
+            _trace(sn, request, len(raw), "[relay] BioTime unreachable -> 503")
+            return _raw(_UNAVAILABLE, 503)
+    _trace(sn, request, len(raw), "OK")
+    return _text("OK")
 
 
 @router.post("/querydata")
@@ -291,16 +366,27 @@ async def querydata(request: Request):
     sn = _sn(request)
     raw = await request.body()
     table = (request.query_params.get("tablename") or "").lower()
-    reply, status = await _call(handle_querydata, sn, _ip(request), table, raw)
-    _trace(sn, request, len(raw), reply)
-    return _text(reply, status)
+    cfg = await run_in_threadpool(relay.config)
+    local = await _local(handle_querydata, sn, _ip(request), table, raw, relayed=bool(cfg))
+    try:
+        mine = int(request.query_params.get("cmdid") or 0) >= relay.OFFSET
+    except ValueError:
+        mine = False
+    if cfg and not mine:  # an answer to one of BioTime's queries
+        return await _relayed_reply(cfg, request, raw, local, sn)
+    _trace(sn, request, len(raw), local[0])
+    return _text(*local)
 
 
 @router.api_route("/ping", methods=["GET", "POST"])
 async def ping(request: Request):
     sn = _sn(request)
+    raw = await request.body()
     if sn:
         await run_in_threadpool(handle_ping, sn)
+    cfg = await run_in_threadpool(relay.config)
+    if cfg:
+        return await _relayed_reply(cfg, request, raw, ("OK", 200), sn)
     return _text("OK")
 
 
@@ -308,6 +394,9 @@ async def ping(request: Request):
 async def rtdata(request: Request):
     sn = _sn(request)
     reply = await run_in_threadpool(handle_time, sn, _ip(request))
+    cfg = await run_in_threadpool(relay.config)
+    if cfg:
+        return await _relayed_reply(cfg, request, b"", (reply, 200), sn)
     _trace(sn, request, 0, reply)
     return _text(reply)
 
@@ -316,17 +405,24 @@ async def rtdata(request: Request):
 async def registry(request: Request):
     sn = _sn(request)
     raw = await request.body()
-    reply = await run_in_threadpool(handle_registry, sn, _ip(request), raw) if sn else "406"
-    _trace(sn, request, len(raw), reply)
-    return _text(reply)
+    cfg = await run_in_threadpool(relay.config)
+    local = await _local(handle_registry, sn, _ip(request), raw, relayed=bool(cfg)) if sn else ("406", 200)
+    if cfg:
+        return await _relayed_reply(cfg, request, raw, local, sn)
+    _trace(sn, request, len(raw), local[0])
+    return _text(*local)
 
 
 @router.api_route("/push", methods=["GET", "POST"])
 async def push_config(request: Request):
     sn = _sn(request)
+    raw = await request.body()
     reply = ("ServerVersion=3.1.2\nServerName=ZKPro\nPushVersion=3.1.2\nErrorDelay=30\n"
              "RequestDelay=10\nTransTimes=00:00\t14:00\nTransInterval=1\n"
              "TransTables=User\tTransaction\nRealtime=1\nSessionID=" + sn + "\nTimeoutSec=10\n")
+    cfg = await run_in_threadpool(relay.config)
+    if cfg:
+        return await _relayed_reply(cfg, request, raw, (reply, 200), sn)
     _trace(sn, request, 0, reply)
     return _text(reply)
 
@@ -338,6 +434,9 @@ async def fdata(request: Request):
     if raw and sn:
         meta, data = P.parse_attphoto(raw)
         await run_in_threadpool(sync.save_attphoto, sn, meta, data)
+    cfg = await run_in_threadpool(relay.config)
+    if cfg:
+        return await _relayed_reply(cfg, request, raw, ("OK", 200), sn)
     _trace(sn, request, len(raw), "OK")
     return _text("OK")
 
