@@ -174,6 +174,9 @@ class Device(Base):
     last_activity: Mapped[datetime | None] = mapped_column(DateTime)
     last_init: Mapped[datetime | None] = mapped_column(DateTime)
     last_sync: Mapped[datetime | None] = mapped_column(DateTime)  # last time the device uploaded data
+    # "biotime" = known only through the BioTime API (the terminal still talks to BioTime);
+    # cleared as soon as the terminal contacts this server directly.
+    managed_by: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
     area: Mapped[Area | None] = relationship(lazy="joined")

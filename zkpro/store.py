@@ -34,6 +34,16 @@ DEFAULTS: dict[str, Any] = {
     # Side-by-side with ZKBioTime: forward every terminal request to it (e.g. http://127.0.0.1:90)
     "adms.relay_url": "",
     "adms.relay_primary": "biotime",  # biotime | zkpro — whose replies the terminal follows
+    # Read devices, people and punches from a running ZKBioTime through its REST API
+    "biotime.enabled": False,
+    "biotime.url": "",                # e.g. http://127.0.0.1:90
+    "biotime.username": "",
+    "biotime.password": "",
+    "biotime.interval": 5,            # minutes between automatic syncs
+    "biotime.history_days": 60,       # punches fetched on the first sync
+    "biotime.last_punch": "",         # newest punch time already imported
+    "biotime.last_run": "",
+    "biotime.last_result": "",
     # --- Maintenance ---
     "backup.keep": 14,
     "backup.hour": 2,

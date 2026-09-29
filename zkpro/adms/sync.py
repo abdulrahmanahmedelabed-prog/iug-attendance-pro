@@ -93,7 +93,10 @@ def area_devices(db: Session, area_ids) -> list[m.Device]:
     ids = [a for a in area_ids if a]
     if not ids:
         return []
-    return list(db.scalars(select(m.Device).where(m.Device.area_id.in_(ids), m.Device.enabled.is_(True))).all())
+    # Terminals known only through the BioTime API still talk to BioTime: never queue for them.
+    return list(db.scalars(select(m.Device).where(
+        m.Device.area_id.in_(ids), m.Device.enabled.is_(True),
+        (m.Device.managed_by.is_(None)) | (m.Device.managed_by != "biotime"))).all())
 
 
 def device_employees(db: Session, device: m.Device) -> list[m.Employee]:
@@ -257,6 +260,8 @@ def get_or_register(db: Session, sn: str, ip: str = "") -> m.Device | None:
         # Put this area's employees on the new terminal, and ask it for what it already has.
         sync_device(db, dev)
         queue(db, sn, C.query_table("user"), "Upload users")
+    if dev.managed_by == "biotime":
+        dev.managed_by = None  # it now talks to this server directly
     if ip:
         dev.ip = ip
     dev.last_activity = now()

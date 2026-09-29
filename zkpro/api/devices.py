@@ -23,8 +23,10 @@ router = APIRouter(prefix="/api")
 
 
 def is_online(d: m.Device) -> bool:
-    return bool(d.last_activity and (now() - d.last_activity).total_seconds() <= max(
-        settings.offline_after, d.heartbeat * 3))
+    limit = max(settings.offline_after, d.heartbeat * 3)
+    if d.managed_by == "biotime":
+        limit = max(limit, 15 * 60)  # state comes from the periodic BioTime API sync
+    return bool(d.last_activity and (now() - d.last_activity).total_seconds() <= limit)
 
 
 def dev_dict(db: Session, d: m.Device) -> dict:
@@ -151,6 +153,10 @@ def device_action(dev_id: int, request: Request, data: dict = Body(...), db: Ses
     act = data.get("action")
     if act not in ACTIONS:
         raise HTTPException(422, "unknown action")
+    if d.managed_by == "biotime":
+        raise HTTPException(409, "هذا الجهاز متصل بـ BioTime ويُقرأ عبر واجهته فقط؛ لإرسال الأوامر وجّهه إلى هذا "
+                                 "البرنامج (وضع التمرير). / This terminal talks to BioTime; point it at this "
+                                 "server (relay mode) to control it.")
     n = 0
 
     def q(content, title=""):

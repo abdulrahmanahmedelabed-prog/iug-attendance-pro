@@ -24,11 +24,20 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 
 def maintenance_tick(state: dict) -> None:
-    """Runs every minute: re-queue unanswered commands, nightly backup."""
+    """Runs every minute: re-queue unanswered commands, BioTime API sync, nightly backup."""
     with session_scope() as db:
         sync.requeue_stale(db)
         hour = int(store.get(db, "backup.hour") or 2)
         keep = int(store.get(db, "backup.keep") or 14)
+        bt_on = bool(store.get(db, "biotime.enabled")) and bool(store.get(db, "biotime.url"))
+        bt_every = max(1, int(store.get(db, "biotime.interval") or 5))
+    if bt_on and (now().timestamp() - state.get("biotime_at", 0)) >= bt_every * 60:
+        state["biotime_at"] = now().timestamp()
+        from . import biotime_sync
+        try:
+            biotime_sync.run_logged()
+        except Exception:  # noqa: BLE001 - recorded for the UI by run_logged
+            pass
     today = now().date()
     if now().hour == hour and state.get("backup_day") != today:
         from .api.system import make_backup, prune_backups

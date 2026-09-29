@@ -440,6 +440,10 @@ function pageAreas(c) {
 
 // ============================================================== devices
 function stateIcon(r) {
+  if (r.managed_by === 'biotime') return `${stateIconCore(r)} <span class="badge info" title="${esc(T('يُقرأ عبر واجهة BioTime؛ الجهاز ما زال متصلاً بـ BioTime', 'Read through the BioTime API; the terminal still talks to BioTime'))}">BioTime</span>`;
+  return stateIconCore(r);
+}
+function stateIconCore(r) {
   if (r.state === 'online' && r.transferring) return `<span class="st-icon transferring" title="${esc(T('جارٍ نقل البيانات', 'Transferring data'))}">⇈</span>`;
   if (r.state === 'online') return `<span class="st-icon online" title="${esc(T('متصل', 'Online'))}">✓</span>`;
   return `<span class="st-icon ${r.state}" title="${esc(stateLabel(r.state))}"></span>`;
@@ -448,6 +452,7 @@ async function pageDevices(c) {
   title(c, T('الجهاز', 'Device'));
   const [s, first] = await Promise.all([GET('/api/settings'), GET('/api/devices')]);
   if (!first.rows.length) {
+    c.appendChild(h(`<div class="alert">${esc(T('أجهزتك متصلة بـ ZKBioTime على المنفذ 90؟ لعرضها هنا فوراً بدون أي تغيير: النظام ← إعدادات النظام ← «القراءة من ZKBioTime عبر واجهته».', 'Terminals connected to ZKBioTime on port 90? To show them here right away without changing anything: System → Settings → "Read from ZKBioTime through its API".'))} <a href="#/system/settings">${esc(T('فتح الإعدادات', 'Open settings'))}</a></div>`));
     const ports = (s._server.adms_ports || []).join(' / ');
     c.appendChild(h(`<div class="alert info">${esc(T('لربط جهاز (مثل SpeedFace-V5L): من قائمة الجهاز ← الاتصال ← إعدادات الخادم السحابي (Cloud Server / ADMS): فعّل ADMS، ضع عنوان IP لهذا الحاسوب، والمنفذ', 'To connect a terminal (e.g. SpeedFace-V5L): device menu → Comm. → Cloud Server Setting (ADMS): enable it, enter this PC\'s IP address and port'))} <b class="ltr">${esc(ports)}</b>${esc(T('، وألغِ تفعيل HTTPS والـ Proxy. سيظهر الجهاز هنا تلقائياً خلال ثوانٍ.', ', with HTTPS and proxy off. The device appears here automatically within seconds.'))}</div>`));
   }
@@ -951,6 +956,13 @@ async function pageSettings(c) {
     { key: 'adms.timezone', label: T('المنطقة الزمنية للأجهزة (ساعات، فارغ = توقيت هذا الحاسوب)', 'Device time zone (hours, empty = this PC)'), type: 'number', min: -12, max: 14 },
     { key: 'adms.sync_bio', label: T('توزيع القوالب', 'Template distribution'), type: 'checkbox', text: T('إرسال الوجه/البصمة المسجلة على جهاز إلى باقي أجهزة المنطقة', 'Send faces/fingerprints enrolled on one device to the other devices of the area') },
     { key: 'adms.upload_photos', label: T('صور الحضور', 'Attendance photos'), type: 'checkbox', text: T('طلب صور البصمة من الأجهزة', 'Ask devices to upload punch photos') },
+    { section: T('القراءة من ZKBioTime عبر واجهته (بدون أي تغيير على الأجهزة)', 'Read from ZKBioTime through its API (no change to the terminals)') },
+    { key: 'biotime.enabled', label: T('المزامنة التلقائية', 'Automatic sync'), type: 'checkbox', text: T('استيراد الأجهزة والموظفين والحركات من BioTime دورياً', 'Import terminals, employees and punches from BioTime periodically') },
+    { key: 'biotime.url', label: T('عنوان BioTime', 'BioTime address'), placeholder: 'http://127.0.0.1:90' },
+    { key: 'biotime.username', label: T('مستخدم BioTime (مدير)', 'BioTime user (admin)') },
+    { key: 'biotime.password', label: T('كلمة مرور BioTime', 'BioTime password'), type: 'password' },
+    { key: 'biotime.interval', label: T('كل (دقيقة)', 'Every (minutes)'), type: 'number', min: 1 },
+    { key: 'biotime.history_days', label: T('أيام السجلات في أول مزامنة', 'Days of punches on first sync'), type: 'number', min: 1 },
     { section: T('العمل جنباً إلى جنب مع ZKBioTime', 'Side by side with ZKBioTime') },
     { key: 'adms.relay_url', label: T('عنوان BioTime (فارغ = إيقاف)', 'BioTime address (empty = off)'), placeholder: 'http://127.0.0.1:90',
       hint: T('وجّه الأجهزة إلى منفذ هذا البرنامج، وسيحفظ كل شيء ويمرّر كل طلب إلى BioTime كما هو فيبقى BioTime يعمل.', 'Point terminals at this program; it stores everything and passes every request on to BioTime unchanged.') },
@@ -968,8 +980,26 @@ async function pageSettings(c) {
       <div>${esc(T('منفذ الأجهزة ADMS', 'ADMS port(s)'))}</div><div><bdi>${esc(srv.adms_ports.join(', '))}</bdi> ${esc(T('(الواجهة تقبل اتصال الأجهزة أيضاً على منفذها)', '(the web port accepts devices too)'))}</div>
       <div>${esc(T('مجلد البيانات', 'Data folder'))}</div><div><bdi>${esc(srv.data_dir)}</bdi></div></div>
       <p class="muted">${esc(T('لتغيير المنافذ: عدّل ملف zkpro.ini أو شغّل البرنامج بـ run.py --web 8090 --adms 90', 'To change ports edit zkpro.ini or start with run.py --web 8090 --adms 90'))}</p></div></div>
-    <div class="panel"><div class="panel-body">${formHtml(f, s)}</div><div class="toolbar" style="border-top:1px solid var(--line);border-bottom:0"><button class="btn primary">${icon('check')}${esc(T('حفظ', 'Save'))}</button><button class="btn relay-test">${icon('sync')}${esc(T('اختبار الاتصال بـ BioTime', 'Test BioTime connection'))}</button><span class="relay-res muted"></span></div></div></div>`);
+    <div class="panel"><div class="panel-body">${formHtml(f, s)}</div><div class="toolbar" style="border-top:1px solid var(--line);border-bottom:0"><button class="btn primary">${icon('check')}${esc(T('حفظ', 'Save'))}</button><button class="btn bt-test">${icon('check')}${esc(T('اختبار ربط BioTime', 'Test BioTime API'))}</button><button class="btn bt-sync">${icon('download')}${esc(T('مزامنة من BioTime الآن', 'Sync from BioTime now'))}</button><button class="btn relay-test">${icon('sync')}${esc(T('اختبار الاتصال بـ BioTime', 'Test BioTime connection'))}</button><span class="relay-res muted"></span></div></div></div>`);
   c.appendChild(p);
+  const btResult = () => {
+    let r = {}; try { r = JSON.parse(s['biotime.last_result'] || '{}'); } catch (e) { /* not JSON */ }
+    if (!s['biotime.last_run']) return '';
+    return r.error ? `✗ ${s['biotime.last_run']}: ${r.error}` : `✓ ${T('آخر مزامنة', 'Last sync')} ${s['biotime.last_run']}: ${T('أجهزة', 'terminals')} ${r.terminals} · ${T('موظفون', 'employees')} ${r.employees} · ${T('حركات جديدة', 'new punches')} ${r.punches}`;
+  };
+  $('.relay-res', p).textContent = btResult();
+  const btForm = () => ({ url: $('[name="biotime.url"]', p).value.trim(), username: $('[name="biotime.username"]', p).value, password: $('[name="biotime.password"]', p).value });
+  $('.bt-test', p).onclick = async () => {
+    const r = await guard(() => POST('/api/biotime/test', btForm()));
+    $('.relay-res', p).textContent = r.ok ? `✓ ${T('تم الدخول إلى BioTime', 'Logged in to BioTime')}: ${r.terminals.length} ${T('جهاز', 'terminals')} (${r.terminals.map(t => t.alias || t.sn).join('، ')}) · ${r.employees ?? '?'} ${T('موظف', 'employees')}` : `✗ ${r.error}`;
+  };
+  $('.bt-sync', p).onclick = async () => {
+    await guard(() => { const v = readForm(p, f); if (v['adms.timezone'] === '') v['adms.timezone'] = null; if (v['adms.default_area'] !== '') v['adms.default_area'] = +v['adms.default_area']; return PUT('/api/settings', v); });
+    $('.relay-res', p).textContent = T('جارٍ الاستيراد من BioTime... قد يستغرق دقائق في المرة الأولى', 'Importing from BioTime... the first time can take minutes');
+    const r = await guard(() => POST('/api/biotime/sync'));
+    $('.relay-res', p).textContent = `✓ ${T('أجهزة', 'terminals')} ${r.terminals} · ${T('موظفون', 'employees')} ${r.employees} · ${T('أقسام', 'departments')} ${r.departments} · ${T('حركات جديدة', 'new punches')} ${r.punches}`;
+    App.lookups = null;
+  };
   $('.relay-test', p).onclick = async () => {
     const url = $('[name="adms.relay_url"]', p).value.trim();
     if (!url) return toast(T('اكتب عنوان BioTime أولاً', 'Enter the BioTime address first'), 'bad');

@@ -196,9 +196,14 @@ def report(key: str, start: str = "", end: str = "", employee_ids: str = "", dep
 # Settings, users, roles, audit, backup
 # --------------------------------------------------------------------------
 
+SECRET_MASK = "********"
+
+
 @router.get("/settings")
 def get_settings(db: Session = Depends(get_db), _=Depends(current_user)):
     s = store.all_(db)
+    if s.get("biotime.password"):
+        s["biotime.password"] = SECRET_MASK
     s["_server"] = {"app": APP_NAME, "version": VERSION, "web_port": settings.web_port,
                     "adms_ports": settings.adms_ports, "data_dir": str(settings.data_dir)}
     return s
@@ -208,6 +213,8 @@ def get_settings(db: Session = Depends(get_db), _=Depends(current_user)):
 def put_settings(request: Request, data: dict = Body(...), db: Session = Depends(get_db),
                  _=Depends(require("system.admin"))):
     for k, v in data.items():
+        if k == "biotime.password" and v == SECRET_MASK:
+            continue  # unchanged
         if k in store.DEFAULTS:
             store.set_(db, k, v)
     from ..adms import relay
@@ -365,6 +372,38 @@ def relay_test(data: dict = Body(...), _=Depends(require("system.admin"))):
         return {"ok": True, "status": exc.code, "reply": exc.read(200).decode("utf-8", "replace")}
     except (OSError, ValueError) as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@router.post("/biotime/test")
+def biotime_test(data: dict = Body(...), db: Session = Depends(get_db), _=Depends(require("system.admin"))):
+    """Log in to BioTime's API and count what would be imported (nothing is written)."""
+    from ..biotime_sync import BioTimeClient, BioTimeError
+    pw = data.get("password")
+    if pw in (None, "", SECRET_MASK):
+        pw = store.get(db, "biotime.password") or ""
+    client = BioTimeClient(str(data.get("url", "")).strip(), str(data.get("username", "")), pw, timeout=15)
+    try:
+        client.login()
+        terminals = list(client.items("/iclock/api/terminals/", page_size=200, max_pages=5))
+        emp_page = client._request("GET", "/personnel/api/employees/", {"page": 1, "page_size": 1})
+    except BioTimeError as exc:
+        return {"ok": False, "error": str(exc)}
+    employees = emp_page.get("count") if isinstance(emp_page, dict) else None
+    return {"ok": True, "terminals": [{"sn": t.get("sn"), "alias": t.get("alias"),
+                                       "ip": t.get("ip_address")} for t in terminals],
+            "employees": employees}
+
+
+@router.post("/biotime/sync")
+def biotime_sync_now(request: Request, db: Session = Depends(get_db), _=Depends(require("system.admin"))):
+    from ..biotime_sync import BioTimeError, run_logged
+    try:
+        result = run_logged()
+    except BioTimeError as exc:
+        raise HTTPException(502, str(exc))
+    audit(db, request, "biotime.sync", "system", json.dumps(result))
+    db.commit()
+    return result
 
 
 @router.get("/about")
