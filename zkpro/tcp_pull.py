@@ -2,7 +2,7 @@
 
 BioTime itself only uses ADMS push. This is a fallback for older terminals
 without ADMS, or to recover records while ADMS is being configured.
-Install with ``pip install pyzk``.
+Installed automatically by start.bat.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def pull_attendance(ip: str, port: int = 4370, comm_key: str = "0", timeout: int
     try:
         from zk import ZK  # type: ignore
     except ImportError as exc:  # pragma: no cover - depends on optional package
-        raise TcpPullError("pyzk is not installed: pip install pyzk") from exc
+        raise TcpPullError("pyzk is missing: close the program and run start.bat again") from exc
     try:
         password = int(comm_key or 0)
     except ValueError:

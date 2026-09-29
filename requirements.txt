@@ -1,10 +1,8 @@
+# Installed automatically by start.bat (tools/bootstrap.py) — nothing to install by hand.
 fastapi>=0.110,<1
 uvicorn[standard]>=0.29,<1
 sqlalchemy>=2.0,<3
 python-multipart>=0.0.9
 openpyxl>=3.1,<4
-# optional: pull records over TCP 4370 from terminals without ADMS
+# direct TCP 4370 access to terminals (device check, record pull)
 pyzk>=0.9,<1
-# tests
-pytest>=8,<9
-httpx>=0.27,<1

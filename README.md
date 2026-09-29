@@ -13,8 +13,8 @@
 
 ## التشغيل السريع (ويندوز)
 
-1. ثبّت **Python 3.10 أو أحدث** من python.org (فعّل خيار *Add python.exe to PATH*).
-2. انقر مرتين على **`start.bat`** — في المرة الأولى يثبّت المكتبات تلقائياً ثم يفتح المتصفح.
+1. انقر مرتين على **`start.bat`** — في المرة الأولى يثبّت Python وكل المكتبات تلقائياً (يحتاج إنترنت مرة واحدة) ثم يفتح المتصفح.
+2. (لا شيء آخر للتثبيت.)
 3. ادخل بـ **admin / admin** وسيطلب منك تغيير كلمة المرور.
 4. (مرة واحدة، كمسؤول) شغّل **`firewall.bat`** لفتح المنافذ، و **`autostart.bat`** ليعمل الخادم تلقائياً مع ويندوز.
 
@@ -23,7 +23,8 @@
 | واجهة البرنامج | `http://IP-الخادم:8090` |
 | منفذ الأجهزة (ADMS) | `8081` و `90` (قابل للتغيير في `zkpro.ini`) |
 
-على لينكس/أي نظام: `pip install -r requirements.txt` ثم `python run.py`.
+لا حاجة لتثبيت أي شيء يدوياً: `start.bat` يثبّت Python (إن لم يكن موجوداً) وكل المكتبات تلقائياً، ويحدّثها بعد كل تحديث.
+على لينكس: `pip install -r requirements.txt` ثم `python run.py`.
 
 ## ربط جهاز SpeedFace‑V5L
 
@@ -99,7 +100,7 @@ python tools/device_simulator.py --server http://127.0.0.1:8081 --users 20 --day
 ## الاختبارات
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 python -m pytest -q tests
 ```
 

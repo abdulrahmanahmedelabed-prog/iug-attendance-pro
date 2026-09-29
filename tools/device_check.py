@@ -55,7 +55,7 @@ def device_info(ip: str, port: int, key: str) -> dict | None:
     try:
         from zk import ZK  # type: ignore
     except ImportError:
-        print(f"{INFO} pyzk not installed (pip install pyzk) - skipping device info")
+        print(f"{INFO} pyzk missing (run start.bat once) - skipping device info")
         return None
     conn = None
     try:
