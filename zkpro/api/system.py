@@ -394,6 +394,12 @@ def biotime_test(data: dict = Body(...), db: Session = Depends(get_db), _=Depend
             "employees": employees}
 
 
+@router.post("/biotime/push")
+def biotime_push_now(db: Session = Depends(get_db), _=Depends(require("system.admin"))):
+    from ..biotime_push import push_pending
+    return push_pending()
+
+
 @router.post("/biotime/sync")
 def biotime_sync_now(request: Request, db: Session = Depends(get_db), _=Depends(require("system.admin"))):
     from ..biotime_sync import BioTimeError, run_logged

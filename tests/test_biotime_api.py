@@ -12,6 +12,8 @@ class FakeBioTimeAPI:
     def __init__(self):
         now = datetime.now().replace(microsecond=0)
         self.token = "tok123"
+        self.writes = []
+        self.resigns = []
         self.areas = [{"id": 1, "area_code": "2", "area_name": "غزة"}]
         self.depts = [{"id": 5, "dept_code": "10", "dept_name": "الموارد البشرية"}]
         self.positions = [{"id": 3, "position_code": "P1", "position_name": "محاسب"}]
@@ -48,11 +50,41 @@ class FakeBioTimeAPI:
                 self.end_headers()
                 self.wfile.write(data)
 
+            def _body(self):
+                return json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+
             def do_POST(self):
-                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-                if self.path == "/jwt-api-token-auth/" and body.get("password") == "pw":
-                    return self._json({"token": fake.token})
-                return self._json({"non_field_errors": ["Unable to log in"]}, 400)
+                body = self._body()
+                if self.path == "/jwt-api-token-auth/":
+                    if body.get("password") == "pw":
+                        return self._json({"token": fake.token})
+                    return self._json({"non_field_errors": ["Unable to log in"]}, 400)
+                if self.headers.get("Authorization") != f"JWT {fake.token}":
+                    return self._json({"detail": "auth"}, 401)
+                table = {"/personnel/api/employees/": fake.employees, "/personnel/api/departments/": fake.depts,
+                         "/personnel/api/areas/": fake.areas, "/personnel/api/positions/": fake.positions,
+                         "/personnel/api/resigns/": fake.resigns}.get(self.path)
+                if table is None:
+                    return self._json({"detail": "not found"}, 404)
+                body["id"] = max([r.get("id", 0) for r in table] + [100]) + 1
+                table.append(body)
+                fake.writes.append(("POST", self.path, body))
+                return self._json(body, 201)
+
+            def do_PATCH(self):
+                body = self._body()
+                emp_id = int(self.path.rstrip("/").split("/")[-1])
+                row = next(e for e in fake.employees if e["id"] == emp_id)
+                row.update(body)
+                fake.writes.append(("PATCH", self.path, body))
+                return self._json(row)
+
+            def do_DELETE(self):
+                emp_id = int(self.path.rstrip("/").split("/")[-1])
+                fake.employees[:] = [e for e in fake.employees if e["id"] != emp_id]
+                fake.writes.append(("DELETE", self.path, {}))
+                self.send_response(204)
+                self.end_headers()
 
             def do_GET(self):
                 if self.headers.get("Authorization") != f"JWT {fake.token}":
@@ -64,6 +96,8 @@ class FakeBioTimeAPI:
                         "/iclock/api/terminals/": fake.terminals, "/iclock/api/transactions/": fake.punches}.get(u.path)
                 if rows is None:
                     return self._json({"detail": "not found"}, 404)
+                if u.path == "/personnel/api/employees/" and q.get("emp_code"):
+                    rows = [r for r in rows if str(r["emp_code"]) == q["emp_code"]]
                 if u.path == "/iclock/api/transactions/" and q.get("start_time"):
                     rows = [r for r in rows if q["start_time"] <= r["punch_time"] <= q.get("end_time", "9")]
                 page, size = int(q.get("page", 1)), min(int(q.get("page_size", 10)), 300)  # BioTime caps page size
@@ -146,3 +180,46 @@ def test_sync_error_is_reported(client, api):
     r = client.post("/api/biotime/sync")
     assert r.status_code == 502
     assert "error" in json.loads(client.get("/api/settings").json()["biotime.last_result"])
+
+
+def test_write_back_reaches_biotime(client, api):
+    client.post("/api/biotime/sync")
+    client.put("/api/settings", json={"biotime.write_back": True})
+    area = next(a["id"] for a in client.get("/api/areas").json()["rows"] if a["name"] == "غزة")
+    sales = client.post("/api/departments", json={"code": "20", "name": "المبيعات"}).json()
+    # new employee in a department BioTime does not have yet
+    client.post("/api/employees", json={"emp_code": "300", "first_name": "خالد", "last_name": "عمر",
+                                        "card_no": "4411", "department_id": sales["id"], "area_ids": [area]})
+    # edit of an imported employee
+    ahmed = client.get("/api/employees", params={"q": "101"}).json()["rows"][0]
+    client.put(f"/api/employees/{ahmed['id']}", json={"card_no": "9999"})
+    r = client.post("/api/biotime/push").json()
+    assert r["pushed"] == 2 and r["left"] == 0, r
+    bt300 = next(e for e in api.employees if e["emp_code"] == "300")
+    assert bt300["first_name"] == "خالد" and bt300["card_no"] == "4411" and bt300["area"] == [1]
+    new_dept = next(d for d in api.depts if d["dept_code"] == "20")
+    assert bt300["department"] == new_dept["id"]
+    assert next(e for e in api.employees if e["emp_code"] == "101")["card_no"] == "9999"
+    # a pull afterwards keeps the local values
+    client.post("/api/biotime/sync")
+    assert client.get("/api/employees", params={"q": "101"}).json()["rows"][0]["card_no"] == "9999"
+    # resign and delete
+    mona = client.get("/api/employees", params={"q": "102"}).json()["rows"][0]
+    client.post("/api/employees/batch", json={"ids": [mona["id"]], "action": "resign", "resign_date": "2026-09-30"})
+    e300 = client.get("/api/employees", params={"q": "300"}).json()["rows"][0]
+    client.delete(f"/api/employees/{e300['id']}")
+    assert client.post("/api/biotime/push").json()["pushed"] == 2
+    assert api.resigns and api.resigns[0]["employee"] == 2
+    assert not any(e["emp_code"] == "300" for e in api.employees)
+
+
+def test_write_back_off_by_default_and_queue_survives_errors(client, api):
+    client.post("/api/employees", json={"emp_code": "301", "first_name": "No push"})
+    assert client.post("/api/biotime/push").json()["pushed"] == 0 and not api.writes
+    client.put("/api/settings", json={"biotime.write_back": True, "biotime.password": "wrong"})
+    client.post("/api/employees", json={"emp_code": "302", "first_name": "Later"})
+    r = client.post("/api/biotime/push").json()
+    assert r["pushed"] == 0 and r["left"] == 1 and r["errors"]
+    client.put("/api/settings", json={"biotime.password": "pw"})
+    assert client.post("/api/biotime/push").json()["pushed"] == 1
+    assert any(e["emp_code"] == "302" for e in api.employees)

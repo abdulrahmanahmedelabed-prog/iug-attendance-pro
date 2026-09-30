@@ -87,7 +87,7 @@ def add_device(request: Request, data: dict = Body(...), db: Session = Depends(g
 
 
 _EDITABLE = {"alias", "area_id", "enabled", "is_attendance", "is_registration", "time_zone", "heartbeat",
-             "trans_interval", "trans_times", "realtime", "comm_key", "tcp_port", "ip"}
+             "trans_interval", "trans_times", "realtime", "comm_key", "tcp_port", "ip", "tcp_poll"}
 
 
 @router.put("/devices/{dev_id}")
@@ -323,20 +323,33 @@ def list_errorlogs(sn: str = "", offset: int = 0, limit: int = 100, db: Session 
 
 @router.post("/devices/{dev_id}/pull")
 def tcp_pull(dev_id: int, request: Request, db: Session = Depends(get_db), _=Depends(require("device.control"))):
-    """Fallback for terminals that cannot use ADMS: read punches over TCP 4370."""
-    from ..tcp_pull import pull_attendance, TcpPullError
+    """Read punches and users straight from the terminal over TCP 4370 (works while the
+    terminal keeps pushing to ZKBioTime)."""
+    from .. import tcp_pull as T
     d = db.get(m.Device, dev_id)
     if not d:
         raise HTTPException(404, "not found")
     if not d.ip:
         raise HTTPException(422, "device IP address is not set")
     try:
-        records, info = pull_attendance(d.ip, d.tcp_port or 4370, d.comm_key or "0")
-    except TcpPullError as exc:
+        records, users, info = T.read_device(d.ip, d.tcp_port or 4370, d.comm_key or "0")
+        result = T.store_read(d.sn, records, users, info)
+    except T.TcpPullError as exc:
+        T.STATUS[d.sn] = {"time": now().isoformat(sep=" "), "ok": False, "error": str(exc)}
         raise HTTPException(502, str(exc))
-    new = sync.save_punches(db, d, records, source="tcp")
-    if info:
-        sync.apply_device_info(d, info)
-    audit(db, request, "device.tcp_pull", "device", f"{d.sn}: {len(new)} new")
+    T.STATUS[d.sn] = {"time": now().isoformat(sep=" "), "ok": True, **result}
+    audit(db, request, "device.tcp_pull", "device", f"{d.sn}: {result['new']} new")
     db.commit()
-    return {"read": len(records), "new": len(new)}
+    return result
+
+
+@router.get("/tcp-status")
+def tcp_status(_=Depends(require("device.view"))):
+    from .. import tcp_pull as T
+    return T.STATUS
+
+
+@router.get("/ports")
+def port_status(_=Depends(require("device.view"))):
+    from ..adms import ports
+    return ports.snapshot()

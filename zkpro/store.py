@@ -44,6 +44,11 @@ DEFAULTS: dict[str, Any] = {
     "biotime.last_punch": "",         # newest punch time already imported
     "biotime.last_run": "",
     "biotime.last_result": "",
+    "biotime.write_back": False,      # send employees changed here to BioTime (it forwards them to the terminals)
+    "biotime.push_queue": [],
+    "biotime.push_result": "",
+    # Direct reading of terminals over TCP 4370 (devices with "tcp_poll" ticked)
+    "tcp.poll_minutes": 5,
     # --- Maintenance ---
     "backup.keep": 14,
     "backup.hour": 2,

@@ -195,9 +195,13 @@ def run(client: BioTimeClient | None = None) -> dict:
         out["positions"] = len(positions)
 
     # Employees: written directly (no device commands — BioTime already manages the terminals).
+    # Employees with a local change still waiting to be written back are left alone.
+    from .biotime_push import pending_codes
+    with session_scope() as db:
+        waiting = pending_codes(db)
     for e in client.items("/personnel/api/employees/"):
         code = str(_get(e, "emp_code", "pin", default="")).strip()
-        if not code:
+        if not code or code in waiting:
             continue
         with session_scope() as db:
             emp = db.scalar(select(m.Employee).where(m.Employee.emp_code == code))

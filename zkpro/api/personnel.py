@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from .. import biotime_push
 from ..adms import sync
 from ..db import get_db, now
 from .. import models as m
@@ -130,6 +131,7 @@ def create_employee(request: Request, data: dict = Body(...), db: Session = Depe
     db.flush()
     sync.link_transactions(db, e)
     sync.employee_changed(db, e, set(), with_bio=True)
+    biotime_push.mark(db, [code])
     audit(db, request, "create", "employee", code)
     db.commit()
     return emp_dict(db, e)
@@ -145,6 +147,7 @@ def update_employee(emp_id: int, request: Request, data: dict = Body(...), db: S
     _apply_employee(db, e, data)
     db.flush()
     sync.employee_changed(db, e, old_areas)
+    biotime_push.mark(db, [e.emp_code])
     audit(db, request, "update", "employee", e.emp_code)
     db.commit()
     return emp_dict(db, e)
@@ -157,6 +160,7 @@ def delete_employee(emp_id: int, request: Request, db: Session = Depends(get_db)
     if not e:
         raise HTTPException(404, "not found")
     sync.employee_deleted(db, e.emp_code, {a.id for a in e.areas})
+    biotime_push.mark(db, [e.emp_code], "delete")
     audit(db, request, "delete", "employee", e.emp_code)
     db.delete(e)
     db.commit()
@@ -206,6 +210,8 @@ def batch_employees(request: Request, data: dict = Body(...), db: Session = Depe
             continue
         else:
             raise HTTPException(422, "unknown action")
+    biotime_push.mark(db, [e.emp_code for e in emps],
+                      {"resign": "resign", "delete": "delete"}.get(action, "upsert"))
     audit(db, request, "batch." + str(action), "employee", f"{len(emps)} employees")
     db.commit()
     return {"ok": True, "employees": len(emps), "commands": n}
@@ -329,6 +335,7 @@ async def import_employees(request: Request, file: UploadFile = File(...), db: S
         if is_new:
             sync.link_transactions(db, e)
         sync.employee_changed(db, e, set() if is_new else {a.id for a in e.areas}, with_bio=is_new)
+        biotime_push.mark(db, [code])
         created += is_new
         updated += not is_new
     audit(db, request, "import", "employee", f"{created} new, {updated} updated")

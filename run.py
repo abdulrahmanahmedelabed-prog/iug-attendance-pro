@@ -58,14 +58,22 @@ def main() -> None:
         print(f"\n  Cannot open web port {settings.web_port}: {exc}\n  Another program (BioTime, IIS...) may be "
               f"using it. Use: run.py --web <other port>\n", file=sys.stderr)
         sys.exit(1)
+    from zkpro.adms import ports as port_status
     socks = [(settings.web_port, web_sock)]
+    port_status.set_mode(settings.web_port, "own", "web + devices")
+    waiting: list[int] = []
     for port in settings.adms_ports:
         if port == settings.web_port:
             continue
         try:
             socks.append((port, _bind(settings.host, port)))
+            port_status.set_mode(port, "own")
         except OSError as exc:
-            print(f"  ! ADMS port {port} skipped: {exc}", file=sys.stderr)
+            # e.g. ZKBioTime holds port 90: keep trying, take it the moment it is released.
+            waiting.append(port)
+            port_status.set_mode(port, "waiting", str(exc))
+            print(f"  ! Port {port} is used by another program (ZKBioTime?). "
+                  f"It will be taken automatically when released.", file=sys.stderr)
 
     print(f"\n  {APP_NAME} {VERSION}")
     print(f"  Web interface : http://127.0.0.1:{settings.web_port}   (first login: admin / admin)")
@@ -79,8 +87,24 @@ def main() -> None:
                              lifespan="on" if i == 0 else "off", timeout_keep_alive=65)
         servers.append((uvicorn.Server(cfg), sock))
 
+    async def claim_when_free(port: int):
+        while True:
+            await asyncio.sleep(10)
+            try:
+                sock = _bind(settings.host, port)
+            except OSError as exc:
+                port_status.set_mode(port, "waiting", str(exc))
+                continue
+            port_status.set_mode(port, "own", "taken after it was released")
+            logging.getLogger("zkpro").info("port %d is free now: devices are served here", port)
+            cfg = uvicorn.Config(app, log_level="warning", access_log=False, lifespan="off",
+                                 timeout_keep_alive=65)
+            await uvicorn.Server(cfg).serve(sockets=[sock])
+            return
+
     async def serve_all():
-        await asyncio.gather(*(srv.serve(sockets=[sock]) for srv, sock in servers))
+        await asyncio.gather(*(srv.serve(sockets=[sock]) for srv, sock in servers),
+                             *(claim_when_free(p) for p in waiting))
 
     try:
         asyncio.run(serve_all())

@@ -153,6 +153,9 @@ class Device(Base):
     realtime: Mapped[bool] = mapped_column(Boolean, default=True)
     comm_key: Mapped[str] = mapped_column(String(20), default="0")        # for TCP pull
     tcp_port: Mapped[int] = mapped_column(Integer, default=4370)
+    # Read punches/users directly from the terminal over TCP 4370 on a schedule (works while
+    # the terminal keeps pushing to another server such as ZKBioTime).
+    tcp_poll: Mapped[bool | None] = mapped_column(Boolean, default=False)
     # Reported by the terminal
     model: Mapped[str] = mapped_column(String(100), default="")
     firmware: Mapped[str] = mapped_column(String(100), default="")

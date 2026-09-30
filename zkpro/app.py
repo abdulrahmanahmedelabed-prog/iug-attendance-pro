@@ -31,6 +31,12 @@ def maintenance_tick(state: dict) -> None:
         keep = int(store.get(db, "backup.keep") or 14)
         bt_on = bool(store.get(db, "biotime.enabled")) and bool(store.get(db, "biotime.url"))
         bt_every = max(1, int(store.get(db, "biotime.interval") or 5))
+    if bt_on:
+        from . import biotime_push
+        try:  # local changes first, so the pull never brings back an older copy
+            biotime_push.push_pending()
+        except Exception:  # noqa: BLE001
+            log.exception("BioTime write-back failed")
     if bt_on and (now().timestamp() - state.get("biotime_at", 0)) >= bt_every * 60:
         state["biotime_at"] = now().timestamp()
         from . import biotime_sync
@@ -38,6 +44,8 @@ def maintenance_tick(state: dict) -> None:
             biotime_sync.run_logged()
         except Exception:  # noqa: BLE001 - recorded for the UI by run_logged
             pass
+    from . import tcp_pull
+    tcp_pull.poll_due(state)
     today = now().date()
     if now().hour == hour and state.get("backup_day") != today:
         from .api.system import make_backup, prune_backups
